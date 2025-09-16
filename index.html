@@ -35,7 +35,24 @@
     </div>
 
     <script>
-        const API_ENDPOINT = 'http://localhost:3001/api/departures';
+        // --- START: Automatic API Endpoint Configuration ---
+
+        // Check if the hostname is 'localhost' or '127.0.0.1'
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+
+        // IMPORTANT: Replace this with your actual Vercel project URL
+        const VERCEL_URL = 'https://translink-api.vercel.app/api/departures';
+
+        const LOCAL_URL = 'http://localhost:3001/api/departures';
+
+        // Automatically select the correct endpoint
+        const API_ENDPOINT = isLocal ? LOCAL_URL : VERCEL_URL;
+
+        // Optional: Log the selected endpoint to the console for easy debugging
+        console.log(`Running in ${isLocal ? 'local' : 'production'} mode. API endpoint is: ${API_ENDPOINT}`);
+
+// --- END: Automatic API Endpoint Configuration ---
+
         const departuresContainer = document.getElementById('departures-container');
         const currentTimeEl = document.getElementById('currentTime');
         const searchInput = document.getElementById('stop-search-input');
