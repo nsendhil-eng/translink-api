@@ -1,0 +1,111 @@
+/* style.css */
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: #f0f2f5;
+    color: #333;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+}
+
+#app {
+    width: 100%;
+    max-width: 700px;
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+}
+
+header {
+    background-color: #005f9e; /* Translink Blue */
+    color: white;
+    padding: 16px 24px;
+    text-align: center;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.5em;
+    font-weight: 500;
+}
+
+#departures-list {
+    padding: 8px 0;
+}
+
+.departure {
+    display: flex;
+    align-items: center;
+    padding: 16px 24px;
+    border-bottom: 1px solid #eef0f3;
+    transition: background-color 0.2s ease-in-out;
+}
+
+.departure:last-child {
+    border-bottom: none;
+}
+
+.departure:hover {
+    background-color: #f9fafb;
+}
+
+.icon {
+    font-size: 2.5em;
+    margin-right: 20px;
+}
+
+.details {
+    flex-grow: 1;
+}
+
+.route-line {
+    font-size: 1.2em;
+    font-weight: 700;
+    color: #111;
+}
+
+.route-line span {
+    font-weight: 400;
+    color: #555;
+}
+
+.stop-name {
+    font-size: 0.9em;
+    color: #667;
+    margin-top: 4px;
+}
+
+.bus-route-info {
+    font-size: 0.9em;
+    color: #d9534f; /* A distinct color */
+    margin-top: 6px;
+    font-style: italic;
+    font-weight: 500;
+}
+
+.time {
+    font-size: 1.3em;
+    font-weight: 700;
+    color: #005f9e;
+    min-width: 100px;
+    text-align: right;
+}
+
+footer {
+    background-color: #f8f9fa;
+    text-align: center;
+    padding: 10px;
+    font-size: 0.8em;
+    color: #888;
+    border-top: 1px solid #eef0f3;
+}
+
+.loading, .error {
+    text-align: center;
+    padding: 40px;
+    font-size: 1.2em;
+    color: #999;
+}

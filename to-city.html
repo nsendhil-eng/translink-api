@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Translink Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            color: #1c1e21;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #005f9e; /* Translink Blue */
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .departures-list {
+            list-style: none;
+            padding: 0;
+        }
+        .departure-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #ddd;
+            transition: background-color 0.3s;
+        }
+        .departure-item:last-child {
+            border-bottom: none;
+        }
+        .departure-item:hover {
+            background-color: #f9f9f9;
+        }
+        .icon {
+            font-size: 2em;
+            margin-right: 15px;
+        }
+        .details {
+            flex-grow: 1;
+        }
+        .route-info {
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .route-info .route-number {
+            display: inline-block;
+            min-width: 50px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            text-align: center;
+            margin-right: 10px;
+        }
+        .bus .route-number { background-color: #ff7f00; } /* Translink Orange */
+        .train .route-number { background-color: #008752; } /* Translink Green */
+        .stop-name {
+            font-size: 0.9em;
+            color: #606770;
+            margin-top: 4px;
+        }
+        .time-info {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #005f9e;
+            text-align: right;
+            min-width: 80px;
+        }
+        #last-updated {
+            text-align: center;
+            margin-top: 20px;
+            font-style: italic;
+            color: #606770;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Next Departures</h1>
+        <div id="departures">
+            </div>
+        <p id="last-updated"></p>
+    </div>
+
+    <script>
+        // --- 1. CONFIGURATION ---
+
+        const API_URLS = [
+    'https://corsproxy.io/?https://jp.translink.com.au/api/stop/timetable/001*51', // Bus
+    'https://corsproxy.io/?https://jp.translink.com.au/api/stop/timetable/600284', // Train P2
+    'https://corsproxy.io/?https://jp.translink.com.au/api/stop/timetable/600286'  // Train P4
+];
+        
+        const BUS_LIMIT = 5;
+        const TRAIN_LIMIT = 3;
+
+        // Custom information for specific bus routes
+        const customBusInfo = {
+            '411': 'Adelaide Street 22 (13 mins travel)',
+            '460': 'Roma Street Bus Station, Queen Street',
+            '412': 'Ann Street (KGS/Ann Street)',
+            '454': 'Roma Street Bus Station, Queen Street',
+            '425': 'Adelaide Street 22 (13 mins travel)',
+            '417': 'Adelaide Street 22 (14 mins travel)',
+            '435': 'Adelaide Street 22 (13 mins travel)',
+            '444': 'King George Square (10 mins travel)',
+            '415': 'Adelaide Street 22 (13 mins travel)',
+            '445': 'Adelaide Street 22 (13 mins travel)',
+            '453': 'Roma Street Bus, Queen Street'
+        };
+
+        const departuresContainer = document.getElementById('departures');
+        const lastUpdatedElement = document.getElementById('last-updated');
+
+        // --- 2. CORE LOGIC ---
+
+        // Main function to fetch, process, and display data
+        async function updateDashboard() {
+            console.log("Fetching latest data...");
+            try {
+                // Fetch data from all URLs at the same time
+                const responses = await Promise.all(API_URLS.map(url => fetch(url)));
+                const data = await Promise.all(responses.map(res => res.json()));
+
+                // Process the raw data from all stops into a single, clean list
+                let allDepartures = [];
+                data.forEach(stopData => {
+                    const processed = processStopData(stopData);
+                    allDepartures.push(...processed);
+                });
+
+                // Separate into buses and trains
+                const buses = allDepartures.filter(d => d.vehicleType === 'Bus');
+                const trains = allDepartures.filter(d => d.vehicleType === 'Train');
+
+                // Sort each list by departure time
+                const sortedBuses = buses.sort((a, b) => a.departureTime - b.departureTime);
+                const sortedTrains = trains.sort((a, b) => a.departureTime - b.departureTime);
+
+                // Get the final list to display, applying the limits
+                const displayList = [
+                    ...sortedBuses.slice(0, BUS_LIMIT),
+                    ...sortedTrains.slice(0, TRAIN_LIMIT)
+                ];
+                
+                // Final sort of the combined display list
+                displayList.sort((a, b) => a.departureTime - b.departureTime);
+
+                // Render the final list to the page
+                renderDepartures(displayList);
+                lastUpdatedElement.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+
+            } catch (error) {
+                console.error("Failed to fetch or process data:", error);
+                departuresContainer.innerHTML = `<p style="color: red; text-align: center;">Error loading data. Please check the console.</p>`;
+            }
+        }
+
+        // Function to transform the raw API data for one stop into a standardized format
+        function processStopData(stopData) {
+            if (!stopData.departures) return [];
+
+            const stopName = stopData.name;
+            const routeMap = new Map(stopData.routes.map(r => [r.id, r]));
+
+            return stopData.departures.map(dep => {
+                const routeInfo = routeMap.get(dep.routeId);
+                // The primary line info (like vehicle type and number) is usually the first in the array
+                const lineInfo = routeInfo?.lines?.[0] || {};
+                
+                const vehicleType = lineInfo.vehicleType || 'Unknown';
+                const routeNumber = lineInfo.name || 'N/A';
+                
+                // Use real-time if available, otherwise fall back to scheduled time
+                const departureUtc = dep.realtime?.expectedDepartureUtc || dep.scheduledDepartureUtc;
+
+                return {
+                    vehicleType,
+                    routeNumber,
+                    headsign: customBusInfo[routeNumber] || dep.headsign,
+                    stopName,
+                    timeDescription: dep.departureDescription,
+                    departureTime: new Date(departureUtc) // Convert to Date object for easy sorting
+                };
+            });
+        }
+        
+        // --- 3. RENDERING ---
+
+        // Function to render the processed data into HTML
+        function renderDepartures(departures) {
+            if (departures.length === 0) {
+                departuresContainer.innerHTML = '<p>No upcoming departures found.</p>';
+                return;
+            }
+
+            let html = '<ul class="departures-list">';
+            departures.forEach(dep => {
+                const isBus = dep.vehicleType === 'Bus';
+                const vehicleClass = isBus ? 'bus' : 'train';
+                const icon = isBus ? '🚌' : '🚆';
+
+                html += `
+                    <li class="departure-item ${vehicleClass}">
+                        <span class="icon">${icon}</span>
+                        <div class="details">
+                            <div class="route-info">
+                                <span class="route-number">${dep.routeNumber}</span>
+                                <span>${dep.headsign}</span>
+                            </div>
+                            <div class="stop-name">${dep.stopName}</div>
+                        </div>
+                        <div class="time-info">${dep.timeDescription}</div>
+                    </li>
+                `;
+            });
+            html += '</ul>';
+
+            departuresContainer.innerHTML = html;
+        }
+
+        // --- 4. INITIALIZATION ---
+
+        // Initial call to load data immediately
+        updateDashboard();
+
+        // Set an interval to refresh the data every 10 seconds (10000 milliseconds)
+        setInterval(updateDashboard, 10000);
+
+    </script>
+
+</body>
+</html>
