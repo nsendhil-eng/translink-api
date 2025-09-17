@@ -1,4 +1,4 @@
-// index.js (UPDATED with canBoardDebark filter)
+// index.js (with syntax error fixed)
 
 const express = require('express');
 const fetch = require('node-fetch');
@@ -26,43 +26,28 @@ const fetchOptions = {
 app.get('/api/departures', async (req, res) => {
   let urlsToFetch = [];
   const stopIds = req.query.stops;
+  if (stopIds) { urlsToFetch = stopIds.split(',').map(id => `https://jp.translink.com.au/api/stop/timetable/${id}`); } 
+  else { urlsToFetch = Object.values(DEFAULT_URLS); }
 
-  if (stopIds) {
-    const ids = stopIds.split(',');
-    urlsToFetch = ids.map(id => `https://jp.translink.com.au/api/stop/timetable/${id}`);
-  } else {
-    urlsToFetch = Object.values(DEFAULT_URLS);
-  }
-
-  if (urlsToFetch.length === 0) {
-    return res.json([]);
-  }
+  if (urlsToFetch.length === 0) { return res.json([]); }
   
   try {
     const requests = urlsToFetch.map(url => fetch(url, fetchOptions));
     const responses = await Promise.all(requests);
-
     const successfulResponses = responses.filter(r => r.ok);
-    if(successfulResponses.length < responses.length){
-        console.warn('Some API requests may have failed.');
-    }
     const data = await Promise.all(successfulResponses.map(r => r.json()));
     
     let allDepartures = [];
-
     data.forEach(stopData => {
-      const stopName = stopData.name;
-      const vehicleType = stopName.toLowerCase().includes('station') ? 'Train' : 'Bus';
-      
       if (stopData.departures) {
         stopData.departures.forEach(dep => {
-          // --- CHANGE IS HERE ---
-          // NEW: Only include services where boarding is possible ("Both")
           if (dep.canBoardDebark === 'Both') {
+            // --- THIS IS THE CORRECTED LINE ---
+            const vehicleType = stopData.name.toLowerCase().includes('station') ? 'Train' : 'Bus';
             const routeIdParts = dep.routeId.split(':');
             const routeNumber = routeIdParts[routeIdParts.length - 1];
             allDepartures.push({
-              stopName: stopName, vehicleType: vehicleType, routeNumber: routeNumber, headsign: dep.headsign,
+              stopName: stopData.name, vehicleType: vehicleType, routeNumber: routeNumber, headsign: dep.headsign,
               scheduledDepartureUtc: dep.scheduledDepartureUtc,
               expectedDepartureUtc: dep.realtime ? dep.realtime.expectedDepartureUtc : null,
               departureDescription: dep.departureDescription,
@@ -73,15 +58,49 @@ app.get('/api/departures', async (req, res) => {
       }
     });
 
-    allDepartures.sort((a, b) => new Date(a.scheduledDepartureUtc) - new Date(b.scheduledDepartureUtc));
+    if (allDepartures.length === 0) {
+        return res.json([]);
+    }
+
+    const referenceApiDate = new Date(allDepartures[0].scheduledDepartureUtc);
+    const currentServerTime = new Date();
+    const now = new Date(Date.UTC(
+        referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate(),
+        currentServerTime.getUTCHours(), currentServerTime.getUTCMinutes(), currentServerTime.getUTCSeconds()
+    ));
+
+    allDepartures.forEach(dep => {
+        const departureTime = new Date(dep.expectedDepartureUtc || dep.scheduledDepartureUtc);
+        dep.secondsUntilDeparture = Math.round((departureTime - now) / 1000);
+    });
+
+    allDepartures.sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
+
+    // --- DEBUGGING BLOCK ---
+    console.log("\n--- TIME CALCULATION DEBUG ---");
+    console.log(`Current Server Time (UTC): ${currentServerTime.toISOString()}`);
+    if (allDepartures.length > 0) {
+        console.log(`API Reference Date (UTC):  ${referenceApiDate.toISOString()}`);
+        console.log(`Synchronized 'Now' (UTC):  ${now.toISOString()}`);
+        
+        const firstDep = allDepartures[0];
+        const firstDepTime = new Date(firstDep.expectedDepartureUtc || firstDep.scheduledDepartureUtc);
+        console.log("\n--- Processing First Departure in Sorted List ---");
+        console.log("Stop Name:", firstDep.stopName);
+        console.log("Description:", firstDep.departureDescription);
+        console.log("Departure's Time (UTC):", firstDepTime.toISOString());
+        console.log("Calculated secondsUntilDeparture:", firstDep.secondsUntilDeparture);
+    } else {
+        console.log("No departures found in the list to debug.");
+    }
+    console.log("--- END DEBUG --- \n");
+    // --- END OF DEBUGGING BLOCK ---
+
     res.json(allDepartures);
 
   } catch (error) {
     console.error('A critical error occurred:', error);
-    res.status(500).json({ 
-      message: 'The server failed to process the request.',
-      error_details: error.message 
-    });
+    res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });
   }
 });
 
