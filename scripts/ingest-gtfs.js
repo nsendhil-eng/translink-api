@@ -56,7 +56,8 @@ const createTablesQuery = `
     location_type INT, parent_station VARCHAR(255), platform_code VARCHAR(50),
     location GEOGRAPHY(Point, 4326),
     servicing_routes TEXT,
-    route_directions JSONB
+    route_directions JSONB,
+    route_types INTEGER[] -- NEW COLUMN FOR VEHICLE TYPES
   );
   CREATE TABLE IF NOT EXISTS stop_times (
     trip_id VARCHAR(255),
@@ -144,28 +145,33 @@ async function main() {
 
     console.log('Pre-calculating servicing routes and directions for all stops... (This may take several minutes)');
     await client.query(`
-        WITH stop_route_directions AS (
+        WITH stop_route_info AS (
             SELECT
                 st.stop_id,
                 r.route_short_name,
+                r.route_type,
+                -- Aggregate directions for each route at each stop
                 JSONB_AGG(DISTINCT CASE WHEN t.direction_id = 0 THEN 'Outbound' WHEN t.direction_id = 1 THEN 'Inbound' ELSE NULL END) AS directions
             FROM stop_times st
             JOIN trips t ON st.trip_id = t.trip_id
             JOIN routes r ON t.route_id = r.route_id
-            GROUP BY st.stop_id, r.route_short_name
+            GROUP BY st.stop_id, r.route_short_name, r.route_type
         ),
         stop_summary AS (
+            -- Now, aggregate the results from the first step for each stop
             SELECT
                 stop_id,
                 STRING_AGG(route_short_name, ', ') AS routes_text,
-                JSONB_OBJECT_AGG(route_short_name, directions) AS route_directions_json
-            FROM stop_route_directions
+                JSONB_OBJECT_AGG(route_short_name, directions) AS route_directions_json,
+                ARRAY_AGG(DISTINCT route_type) as route_types_array
+            FROM stop_route_info
             GROUP BY stop_id
         )
         UPDATE stops
         SET
             servicing_routes = ss.routes_text,
-            route_directions = ss.route_directions_json
+            route_directions = ss.route_directions_json,
+            route_types = ss.route_types_array
         FROM stop_summary ss
         WHERE stops.stop_id = ss.stop_id;
     `);
