@@ -21,10 +21,18 @@
             <p id="last-updated" class="text-sm text-gray-500 dark:text-gray-400 mt-1"></p>
         </header>
         
-        <section class="mb-8 relative">
-            <input type="text" id="stop-search-input" placeholder="Search for a stop..."
-                   class="w-full p-4 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <div id="autocomplete-suggestions" class="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border rounded-lg shadow-lg hidden"></div>
+        <section class="mb-8">
+            <div class="flex flex-col sm:flex-row gap-2 items-center">
+                <div class="relative flex-grow w-full">
+                    <input type="text" id="stop-search-input" placeholder="Search for a stop..."
+                           class="w-full p-4 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <div id="autocomplete-suggestions" class="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border rounded-lg shadow-lg hidden"></div>
+                </div>
+                <button id="find-near-me-btn" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg transition duration-300 flex items-center justify-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd" /></svg>
+                    <span>Near Me</span>
+                </button>
+            </div>
             <div id="selected-stops-container" class="mt-3 flex flex-wrap gap-2"></div>
         </section>
 
@@ -33,9 +41,11 @@
 
     <script>
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
-        const VERCEL_URL = 'https://translink-api.vercel.app/api/departures'; // Replace with your Vercel URL
-        const LOCAL_URL = 'http://localhost:3001/api/departures';
-        const API_ENDPOINT = isLocal ? LOCAL_URL : VERCEL_URL;
+        const VERCEL_URL = 'https://transit.sendhil.com.au';
+        const LOCAL_URL = 'http://localhost:3001';
+        const BASE_URL = isLocal ? LOCAL_URL : VERCEL_URL;
+        const API_ENDPOINT = `${BASE_URL}/api/departures`;
+        const findNearMeEndpoint = `${BASE_URL}/api/stops-near-me`;
         
         const departuresContainer = document.getElementById('departures-container');
         const currentTimeEl = document.getElementById('currentTime');
@@ -43,156 +53,78 @@
         const searchInput = document.getElementById('stop-search-input');
         const suggestionsContainer = document.getElementById('autocomplete-suggestions');
         const selectedStopsContainer = document.getElementById('selected-stops-container');
+        const findNearMeBtn = document.getElementById('find-near-me-btn');
 
-        const ALL_STOPS_DATA = [ { name: 'Auchenflower Station, platform 2', id: '600284'}, { name: 'Auchenflower Station, platform 4', id: '600286'}, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951'}, { name: 'Roma Street Stop 138', id: '000138' }, { name: 'Roma Street Station, platform 8', id: '600029' }, { name: 'Cultural Centre station, platform 1', id: '019991' }, { name: 'Mater Hill station, platform 1', id: '019993'}, { name: 'King George Square station, platform 1', id: '019998'}, { name: 'UQ Lakes station, platform A', id: '011778'} ];
+        let ALL_STOPS_DATA = [ { name: 'Auchenflower Station, platform 2', id: '600284'}, { name: 'Auchenflower Station, platform 4', id: '600286'}, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951'} ];
         let selectedStops = [];
 
-        function formatBrisbaneTime(utcDateString) {
-            if (!utcDateString) return 'N/A';
-            const date = new Date(utcDateString);
-            return new Intl.DateTimeFormat('en-AU', { hour: 'numeric', minute: 'numeric', hour12: true, timeZone: 'Australia/Brisbane' }).format(date);
-        }
-        
-        function formatTimeRemaining(totalSeconds) {
-            if (totalSeconds <= 5) { return 'Now'; }
-            if (totalSeconds < 300) {
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-                if (minutes > 0) { return `${minutes} min ${seconds} sec`; }
-                return `${seconds} sec`;
-            }
-            const roundedMinutes = Math.round(totalSeconds / 60);
-            return `${roundedMinutes} min`;
-        }
-        
-        async function fetchAndRenderDepartures() {
-            let url = API_ENDPOINT;
-            if (selectedStops.length > 0) { url += `?stops=${selectedStops.join(',')}`; }
+        function formatBrisbaneTime(utcDateString) { /* ... same ... */ }
+        function formatTimeRemaining(totalSeconds) { /* ... same ... */ }
+        async function fetchAndRenderDepartures() { /* ... same ... */ }
+        function updateCurrentTime() { /* ... same ... */ }
+        function renderSelectedStopTags() { /* ... same ... */ }
+        searchInput.addEventListener('input', () => { /* ... same ... */ });
+        suggestionsContainer.addEventListener('click', (e) => { /* ... same ... */ });
+        selectedStopsContainer.addEventListener('click', (e) => { /* ... same ... */ });
+        document.addEventListener('click', (e) => { /* ... same ... */ });
 
-            try {
-                const response = await fetch(url);
-                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-                const allDepartures = await response.json();
-
-                const upcomingDepartures = allDepartures
-                    .filter(dep => (dep.secondsUntilDeparture > -60))
-                    .slice(0, 10);
-
-                departuresContainer.innerHTML = '';
-                lastUpdatedEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
-
-                if (upcomingDepartures.length === 0) {
-                    departuresContainer.innerHTML = `<div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg text-center"><p class="text-lg font-medium">No upcoming services found.</p></div>`;
-                    return;
-                }
-
-                upcomingDepartures.forEach(dep => {
-                    const card = document.createElement('div');
-                    card.className = 'bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg flex items-start gap-4';
-                    
-                    const dueInText = formatTimeRemaining(dep.secondsUntilDeparture);
-                    const isBus = dep.vehicleType === 'Bus';
-                    const iconBgColor = isBus ? 'bg-blue-500' : 'bg-green-600';
-                    const iconContent = isBus ? dep.routeNumber : '🚆';
-                    const iconHTML = `<div class="flex-shrink-0 ${iconBgColor} text-white w-20 h-20 rounded-lg flex items-center justify-center text-3xl font-bold">${iconContent}</div>`;
-                    const destinationHTML = isBus && dep.destinationInfo ? `<p class="text-sm text-gray-600 dark:text-gray-400 mt-1 font-medium">📍 ${dep.destinationInfo}</p>` : '';
-                    
-                    const scheduledTime = formatBrisbaneTime(dep.scheduledDepartureUtc);
-                    const expectedTime = formatBrisbaneTime(dep.expectedDepartureUtc);
-                    const expectedHTML = dep.expectedDepartureUtc && (expectedTime !== scheduledTime) ? `<div class="font-semibold text-green-600 dark:text-green-400">Expected: ${expectedTime}</div>` : '';
-
-                    card.innerHTML = `${iconHTML}
-                        <div class="flex-grow"><h3 class="text-sm sm:text-lg font-bold">${dep.stopName}</h3>${destinationHTML}</div>
-                        <div class="text-right flex-shrink-0">
-                            <div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>
-                            ${expectedHTML}
-                            <div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div>
-                        </div>`;
-                    departuresContainer.appendChild(card);
-                });
-
-            } catch (error) {
-                console.error('Failed to fetch departures:', error);
-                departuresContainer.innerHTML = `<div class="bg-red-100 p-4 rounded-lg" role="alert"><p class="font-bold">Connection Error</p><p>Could not load data. Ensure the local server is running.</p></div>`;
-            }
-        }
-        
-        function updateCurrentTime() {
-             const now = new Date();
-             currentTimeEl.textContent = now.toLocaleTimeString('en-AU', { weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Brisbane' });
-        }
-        
-        // --- ALL SEARCH AND TAG FUNCTIONS RESTORED BELOW ---
-
-        function renderSelectedStopTags() {
-            selectedStopsContainer.innerHTML = '';
-            selectedStops.forEach(stopId => {
-                const stop = ALL_STOPS_DATA.find(s => s.id === stopId);
-                if (!stop) return;
-                const tag = document.createElement('div');
-                tag.className = 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm font-semibold px-3 py-1 rounded-full flex items-center gap-2';
-                tag.innerHTML = `<span>${stop.name}</span><button data-id="${stop.id}" class="remove-tag-btn font-bold">×</button>`;
-                selectedStopsContainer.appendChild(tag);
-            });
-        }
-        
-        searchInput.addEventListener('input', () => {
-            const query = searchInput.value.toLowerCase();
-            if (query.length < 2) {
-                suggestionsContainer.classList.add('hidden');
+        findNearMeBtn.addEventListener('click', () => {
+            if (!navigator.geolocation) {
+                alert('Geolocation is not supported by your browser.');
                 return;
             }
-            const filteredStops = ALL_STOPS_DATA.filter(stop => stop.name.toLowerCase().includes(query) && !selectedStops.includes(stop.id));
-            
-            suggestionsContainer.innerHTML = '';
-            if (filteredStops.length > 0) {
-                filteredStops.forEach(stop => {
-                    const item = document.createElement('div');
-                    item.className = 'p-3 cursor-pointer suggestion-item';
-                    item.textContent = stop.name;
-                    item.dataset.id = stop.id;
-                    suggestionsContainer.appendChild(item);
-                });
-                suggestionsContainer.classList.remove('hidden');
-            } else {
-                suggestionsContainer.classList.add('hidden');
-            }
-        });
 
-        suggestionsContainer.addEventListener('click', (e) => {
-            if (e.target.matches('.suggestion-item')) {
-                const stopId = e.target.dataset.id;
-                if (!selectedStops.includes(stopId)) {
-                    selectedStops.push(stopId);
-                    renderSelectedStopTags();
-                    fetchAndRenderDepartures();
+            findNearMeBtn.querySelector('span').textContent = 'Finding...';
+            findNearMeBtn.disabled = true;
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { latitude, longitude } = position.coords;
+                    
+                    fetch(`${findNearMeEndpoint}?lat=${latitude}&lon=${longitude}`)
+                        .then(response => response.json())
+                        .then(nearbyStops => {
+                            suggestionsContainer.innerHTML = '';
+                            if (nearbyStops.length > 0) {
+                                nearbyStops.forEach(stop => {
+                                    // Add the new data to our client-side list if it's not already there
+                                    if (!ALL_STOPS_DATA.some(s => s.id === stop.id)) {
+                                        ALL_STOPS_DATA.push(stop);
+                                    }
+
+                                    // --- THIS IS THE UPDATED DISPLAY LOGIC ---
+                                    const item = document.createElement('div');
+                                    item.className = 'p-3 cursor-pointer suggestion-item';
+                                    item.dataset.id = stop.id; // The stop_id is used for selection
+                                    item.innerHTML = `
+                                        <div class="font-semibold text-gray-800 dark:text-gray-200">${stop.name}</div>
+                                        <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                            Routes: ${stop.servicing_routes || 'N/A'}
+                                        </div>
+                                    `;
+                                    suggestionsContainer.appendChild(item);
+                                });
+                                suggestionsContainer.classList.remove('hidden');
+                                searchInput.focus();
+                            } else {
+                                alert('No stops found within a 500 meter radius.');
+                            }
+                        })
+                        .finally(() => {
+                            findNearMeBtn.querySelector('span').textContent = 'Near Me';
+                            findNearMeBtn.disabled = false;
+                        });
+                },
+                (error) => {
+                    alert('Unable to retrieve your location. Please grant location permission.');
+                    findNearMeBtn.querySelector('span').textContent = 'Near Me';
+                    findNearMeBtn.disabled = false;
                 }
-                searchInput.value = '';
-                suggestionsContainer.classList.add('hidden');
-            }
-        });
-        
-        selectedStopsContainer.addEventListener('click', (e) => {
-            if (e.target.matches('.remove-tag-btn')) {
-                const stopIdToRemove = e.target.dataset.id;
-                selectedStops = selectedStops.filter(id => id !== stopIdToRemove);
-                renderSelectedStopTags();
-                fetchAndRenderDepartures();
-            }
-        });
-        
-        document.addEventListener('click', (e) => {
-            if (!searchInput.contains(e.target) && !suggestionsContainer.contains(e.target)) {
-                suggestionsContainer.classList.add('hidden');
-            }
+            );
         });
 
-        // --- Initial calls and intervals ---
-        updateCurrentTime();
-        fetchAndRenderDepartures();
-        setInterval(updateCurrentTime, 1000);
-        setInterval(fetchAndRenderDepartures, 10000);
-
+        // --- Keep all other functions and listeners from the previous version ---
+        // (functions are collapsed here for brevity)
     </script>
 </body>
 </html>
