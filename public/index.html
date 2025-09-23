@@ -8,10 +8,20 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .suggestion-item:hover { background-color: #bae6fd; }
+        .suggestion-item:hover { background-color: #104866; }
         .dark .suggestion-item:hover { background-color: #1e40af; }
         .child-stop { border-left: 2px solid #3b82f6; }
         .filter-btn-active { background-color: #2563eb; color: white; }
+        
+        /* --- NEW: Style for already selected items in the dropdown --- */
+        .suggestion-selected {
+            opacity: 0.6;
+            cursor: not-allowed;
+            background-color: #f6f9ff !important; /* light gray, !important to override hover */
+        }
+        .dark .suggestion-selected {
+            background-color: #374151 !important; /* dark gray */
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 py-12 px-4">
@@ -71,13 +81,17 @@
         const findNearMeBtn = document.getElementById('find-near-me-btn');
         const searchOptionsContainer = document.getElementById('search-options');
         
-        let ALL_STOPS_DATA = [ { name: 'Auchenflower Station, platform 2', id: '600284', stop_code: '600284' }, { name: 'Auchenflower Station, platform 4', id: '600286', stop_code: '600286' }, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951', stop_code: '001951' }];
+        let ALL_STOPS_DATA = [];
         let selectedStops = [];
         let searchDebounceTimer;
         
         let lastSearchCoords = null;
         let currentRadius = 500;
         let activeTypes = [];
+
+        let cachedPosition = null;
+        let positionCacheTimestamp = null;
+        const CACHE_DURATION_MS = 60 * 1000;
 
         function formatBrisbaneTime(utcDateString) {
             if (!utcDateString) return 'N/A';
@@ -117,7 +131,7 @@
                     const dueInText = formatTimeRemaining(dep.secondsUntilDeparture);
                     const isBus = dep.vehicleType === 'Bus';
                     const iconBgColor = isBus ? 'bg-blue-500' : 'bg-green-600';
-                    const iconContent = isBus ? dep.routeNumber : '🚆';
+                    const iconContent = dep.routeNumber ;
                     const iconHTML = `<div class="flex-shrink-0 ${iconBgColor} text-white w-20 h-20 rounded-lg flex items-center justify-center text-3xl font-bold">${iconContent}</div>`;
                     const destinationHTML = isBus && dep.destinationInfo ? `<p class="text-sm text-gray-600 dark:text-gray-400 mt-1 font-medium">📍 ${dep.destinationInfo}</p>` : '';
                     const scheduledTime = formatBrisbaneTime(dep.scheduledDepartureUtc);
@@ -128,7 +142,7 @@
                 });
             } catch (error) {
                 console.error('Failed to fetch departures:', error);
-                departuresContainer.innerHTML = `<div class="bg-red-100 p-4 rounded-lg" role="alert"><p class="font-bold">Connection Error</p><p>Could not load data. Ensure the local server is running.</p></div>`;
+                departuresContainer.innerHTML = `<div class="bg-red-500 p-4 rounded-lg" role="alert"><p class="font-bold">Connection Error</p><p>Could not load data. Ensure the local server is running.</p></div>`;
             }
         }
         
@@ -225,13 +239,12 @@
             findNearMeBtn.querySelector('span').textContent = 'Searching...';
             findNearMeBtn.disabled = true;
             try {
-                console.log(latitude,longitude);
                 const response = await fetch(`${findNearMeEndpoint}?lat=${latitude}&lon=${longitude}&radius=${radius}&types=${types}`);
-                    if (!response.ok) {
-                console.error("Server returned an error:", response.status, await response.text());
-                suggestionsContainer.innerHTML = `<div class="p-3 text-center text-red-500">Error fetching stops from server.</div>`;
-                suggestionsContainer.classList.remove('hidden');
-                return;
+                if (!response.ok) {
+                    console.error("Server returned an error:", response.status, await response.text());
+                    suggestionsContainer.innerHTML = `<div class="p-3 text-center text-red-500">Error fetching stops from server.</div>`;
+                    suggestionsContainer.classList.remove('hidden');
+                    return;
                 }
                 const nearbyStops = await response.json();
                 renderSuggestions(nearbyStops);
@@ -271,14 +284,19 @@
                 return;
             }
             if (suggestionItem) {
+                // --- THIS IS THE MODIFIED LOGIC ---
+                // 1. Prevent action if already selected
+                if (suggestionItem.classList.contains('suggestion-selected')) {
+                    return;
+                }
                 const stopCode = suggestionItem.dataset.code; 
                 if (stopCode && !selectedStops.includes(stopCode)) {
                     selectedStops.push(stopCode);
                     renderSelectedStopTags();
                     fetchAndRenderDepartures();
                 }
-                searchInput.value = '';
-                suggestionsContainer.classList.add('hidden');
+                // 2. Add class to show it's selected, but keep dropdown open
+                suggestionItem.classList.add('suggestion-selected');
             }
             if (parentToggle) {
                 const childContainer = parentToggle.nextElementSibling;
@@ -294,22 +312,51 @@
                 selectedStops = selectedStops.filter(code => code !== stopCodeToRemove);
                 renderSelectedStopTags();
                 fetchAndRenderDepartures();
+
+                // Un-disable the item in the dropdown
+                const deselectedItem = suggestionsContainer.querySelector(`[data-code="${stopCodeToRemove}"]`);
+                if (deselectedItem) {
+                    deselectedItem.classList.remove('suggestion-selected');
+                }
             }
         });
 
         findNearMeBtn.addEventListener('click', () => {
             if (!navigator.geolocation) { return alert('Geolocation is not supported by your browser.'); }
+            
+            if (cachedPosition && positionCacheTimestamp && (new Date() - positionCacheTimestamp < CACHE_DURATION_MS)) {
+                console.log("Using cached location.");
+                lastSearchCoords = cachedPosition.coords;
+                currentRadius = 500;
+                activeTypes = [];
+                document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-btn-active'));
+                performNearbySearch();
+                return;
+            }
+
+            findNearMeBtn.querySelector('span').textContent = 'Acquiring GPS...';
+            findNearMeBtn.disabled = true;
+
             currentRadius = 500;
             activeTypes = [];
             document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-btn-active'));
+            
+            const geoOptions = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
+
             navigator.geolocation.getCurrentPosition(
                 (position) => {
+                    console.log("Acquired new location, updating cache.");
+                    cachedPosition = position;
+                    positionCacheTimestamp = new Date();
                     lastSearchCoords = position.coords;
                     performNearbySearch();
                 },
                 (error) => {
                     alert('Unable to retrieve your location. Please grant permission.');
-                }
+                    findNearMeBtn.querySelector('span').textContent = 'Near Me';
+                    findNearMeBtn.disabled = false;
+                },
+                geoOptions
             );
         });
         
@@ -318,7 +365,7 @@
                 e.target.classList.toggle('filter-btn-active');
                 activeTypes = [];
                 document.querySelectorAll('.filter-btn.filter-btn-active').forEach(btn => {
-                    activeTypes.push(btn.dataset.type);
+                    activeTypes.push(...btn.dataset.type.split(','));
                 });
                 currentRadius = 500;
                 performNearbySearch();

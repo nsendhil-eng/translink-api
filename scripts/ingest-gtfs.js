@@ -151,7 +151,7 @@ async function main() {
                 r.route_short_name,
                 r.route_type,
                 -- Aggregate directions for each route at each stop
-                JSONB_AGG(DISTINCT CASE WHEN t.direction_id = 0 THEN 'Outbound' WHEN t.direction_id = 1 THEN 'Inbound' ELSE NULL END) AS directions
+                JSONB_AGG(DISTINCT CASE WHEN t.direction_id = 0 THEN 'Inbound' WHEN t.direction_id = 1 THEN 'Outbound' ELSE NULL END) AS directions
             FROM stop_times st
             JOIN trips t ON st.trip_id = t.trip_id
             JOIN routes r ON t.route_id = r.route_id
