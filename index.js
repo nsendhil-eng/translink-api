@@ -1,10 +1,13 @@
-// index.js
+// index.js (Cleaned up and corrected)
 
 require('dotenv').config();
 const { createPool } = require('@vercel/postgres');
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const protobuf = require('protobufjs');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -14,36 +17,32 @@ const pool = createPool({
     connectionString: process.env.POSTGRES_URL,
 });
 
-const BUS_ROUTE_INFO = { '411': 'Adelaide Street Stop 22 (13 mins travel)', '460': 'Roma Street busway station', '412': 'Ann Street Stop 7 (King George Square)', '454': 'Roma Street busway station', '425': 'Adelaide Street Stop 22 (13 mins travel)', '417': 'Adelaide Street Stop 22 (14 mins travel)', '435': 'Adelaide Street Stop 22 (13 mins travel)', '444': 'King George Square station (10 mins travel)', '415': 'Adelaide Street Stop 22 (13 mins travel)', '445': 'Adelaide Street Stop 22 (13 mins travel)', '453': 'Roma Street busway station',};
-const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' } };
+const REALTIME_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates';
+const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 
-// --- TEXT SEARCH API ENDPOINT ---
+// Load the GTFS-realtime schema once when the server starts
+let gtfsRealtime;
+protobuf.load(path.join(__dirname, 'gtfs-realtime.proto')).then((root) => {
+    gtfsRealtime = root.lookupType("transit_realtime.FeedMessage");
+    console.log('✅ GTFS-realtime schema loaded.');
+}).catch(err => console.error('❌ Failed to load GTFS-realtime schema:', err));
+
+
+// --- SEARCH ENDPOINTS ---
 app.get('/api/search-stops', async (req, res) => {
   const { q } = req.query;
-
-  if (!q || q.length < 3) {
-    return res.json([]);
-  }
-
+  if (!q || q.length < 3) { return res.json([]); }
   try {
     const searchQuery = `%${q}%`;
-    
+    // FIX: Simplified query to only select columns that exist in the stable schema
     const { rows } = await pool.query(`
-      SELECT 
-        s.stop_id AS id,
-        s.stop_name AS name,
-        s.stop_code,
-        s.parent_station,
-        parent_stop.stop_name AS parent_station_name,
-        s.servicing_routes,
-        s.route_directions
+      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station,
+             parent_stop.stop_name AS parent_station_name, s.servicing_routes, s.route_directions
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
-      WHERE 
-        s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
+      WHERE s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
       LIMIT 20;
     `, [searchQuery]);
-
     res.json(rows);
   } catch (error) {
     console.error('Text search query failed:', error);
@@ -51,34 +50,25 @@ app.get('/api/search-stops', async (req, res) => {
   }
 });
 
-// --- GEOSPATIAL API ENDPOINT ---
 app.get('/api/stops-near-me', async (req, res) => {
   const { lat, lon, radius, types } = req.query;
   if (!lat || !lon) { return res.status(400).json({ error: 'Latitude and longitude are required.' }); }
-
   try {
     const radiusInMeters = parseInt(radius, 10) || 500;
     const typeFilter = types ? types.split(',').map(Number) : null;
-
     let query = `
-      SELECT 
-        s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station,
-        parent_stop.stop_name AS parent_station_name, s.servicing_routes, s.route_directions
+      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station,
+             parent_stop.stop_name AS parent_station_name, s.servicing_routes, s.route_directions
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
       WHERE ST_DWithin(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
     `;
-
     const queryParams = [lon, lat, radiusInMeters];
-    
-    // If a type filter is provided, add it to the query
     if (typeFilter && typeFilter.length > 0) {
-      query += ` AND s.route_types && $4`; // '&&' is the array "overlaps" operator
+      query += ` AND s.route_types && $4`;
       queryParams.push(typeFilter);
     }
-
     query += ` ORDER BY ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) LIMIT 25;`;
-
     const { rows } = await pool.query(query, queryParams);
     res.json(rows);
   } catch (error) {
@@ -87,73 +77,128 @@ app.get('/api/stops-near-me', async (req, res) => {
   }
 });
 
-// --- REAL-TIME DEPARTURES API ENDPOINT ---
+// --- MAIN DEPARTURES ENDPOINT ---
 app.get('/api/departures', async (req, res) => {
-  const stopCodes = req.query.stops;
+    const stopCodes = (req.query.stops || '001951,600284,600286').split(',');
+    
+    try {
+        const now = new Date();
+        const timeZone = 'Australia/Brisbane';
+        const parts = new Intl.DateTimeFormat('en-AU', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' }).formatToParts(now);
+        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
+        const dayOfWeek = findPart('weekday').toLowerCase();
+        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
 
-  console.log(`Fetching departures for stops: ${stopCodes}`);
-  
-  if (!stopCodes) {
-    // Default stops if none are provided
-    const defaultStopCodes = ['001951', '600284', '600286'];
-    const urlsToFetch = defaultStopCodes.map(code => `https://jp.translink.com.au/api/stop/timetable/${code.trim()}`);
-    return fetchDepartures(urlsToFetch, res);
-  }
+        const staticQuery = `
+            SELECT
+                st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
+                t.trip_headsign, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
+                r.route_type,
+                CASE WHEN r.route_type = 3 THEN 'Bus' WHEN r.route_type = 4 THEN 'Ferry' ELSE 'Train' END AS vehicle_type
+            FROM stop_times AS st
+            JOIN trips AS t ON st.trip_id = t.trip_id
+            JOIN routes AS r ON t.route_id = r.route_id
+            JOIN stops s ON st.stop_id = s.stop_id
+            WHERE s.stop_code = ANY($1::text[])
+            AND t.service_id IN (
+                (SELECT service_id FROM calendar WHERE start_date <= $2 AND end_date >= $2 AND ${dayOfWeek} = 1)
+                EXCEPT (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 2)
+                UNION (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 1)
+            );
+        `;
+        const staticResult = await pool.query(staticQuery, [stopCodes, dateString]);
+        const scheduledDepartures = staticResult.rows;
 
-  const urlsToFetch = stopCodes.split(',').map(code => `https://jp.translink.com.au/api/stop/timetable/${code.trim()}`);
-  return fetchDepartures(urlsToFetch, res);
+        if (scheduledDepartures.length === 0) {
+            return res.json([]);
+        }
+
+        const liveRequests = stopCodes.map(code => fetch(`https://jp.translink.com.au/api/stop/timetable/${code.trim()}`, fetchOptions).then(res => res.ok ? res.json() : Promise.resolve({ departures: [] })));
+        const liveResults = await Promise.all(liveRequests);
+
+        const liveDataMap = new Map();
+        liveResults.forEach(stopData => {
+            stopData.departures?.forEach(dep => {
+                const key = `${dep.routeId.split(':').pop()}-${dep.scheduledDepartureUtc}`;
+                liveDataMap.set(key, dep);
+            });
+        });
+        
+        const referenceApiDate = new Date(liveResults.find(lr => lr.departures?.length > 0)?.departures[0].scheduledDepartureUtc || Date.now());
+        const synchronizedNow = new Date(Date.UTC(
+            referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate(),
+            now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()
+        ));
+
+        const enrichedDepartures = scheduledDepartures.map(s => {
+            // --- ROBUST TIME CALCULATION LOGIC ---
+            const [h, m, sec] = s.departure_time.split(':').map(Number);
+            
+            // 1. Get the start of the service day in UTC
+            const serviceDayStart = new Date(Date.UTC(referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate()));
+            
+            // 2. Add the departure time as seconds from the start of the day. This correctly handles hours > 23.
+            const scheduledUtc = new Date(serviceDayStart.getTime() + (h * 3600 + m * 60 + sec) * 1000);
+            
+            // Adjust for Brisbane timezone (UTC+10)
+            scheduledUtc.setUTCHours(scheduledUtc.getUTCHours() - 10);
+            // --- END OF TIME LOGIC ---
+
+            const key = `${s.route_short_name}-${scheduledUtc.toISOString()}`;
+            const liveMatch = liveDataMap.get(key);
+
+            const expectedUtc = liveMatch?.realtime?.expectedDepartureUtc || scheduledUtc.toISOString();
+            const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
+            
+            let vehicleType = 'Train';
+            if (s.route_type === 3) vehicleType = 'Bus';
+            if (s.route_type === 4) vehicleType = 'Ferry';
+
+            return {
+                trip_id: s.trip_id,
+                stop_sequence: s.stop_sequence,
+                stopName: s.stop_name,
+                vehicleType: vehicleType,
+                routeNumber: s.route_short_name,
+                headsign: s.trip_headsign,
+                scheduledDepartureUtc: scheduledUtc.toISOString(),
+                expectedDepartureUtc: liveMatch?.realtime?.expectedDepartureUtc,
+                secondsUntilDeparture: secondsUntil,
+                routeLongName: s.route_long_name,
+                routeColor: s.route_color,
+                routeTextColor: s.route_text_color,
+                platformCode:s.platform_code
+            };
+        });
+        
+        const upcomingDepartures = enrichedDepartures
+            .filter(dep => dep.secondsUntilDeparture > -120)
+            .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture)
+            .slice(0, 15);
+        res.json(upcomingDepartures);
+    } catch (error) {
+        console.error('An error occurred in /api/departures:', error);
+        res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });
+    }
 });
 
-async function fetchDepartures(urlsToFetch, res) {
-  if (urlsToFetch.length === 0) { return res.json([]); }
-  try {
-    const requests = urlsToFetch.map(url => fetch(url, fetchOptions));
-    const responses = await Promise.all(requests);
-    const successfulResponses = responses.filter(r => r.ok);
-    const data = await Promise.all(successfulResponses.map(r => r.json()));
-    
-    let allDepartures = [];
-    data.forEach(stopData => {
-      if (stopData.departures) {
-        stopData.departures.forEach(dep => {
-          if (dep.canBoardDebark === 'Both') {
-            const vehicleType = stopData.name.toLowerCase().includes('station') ? 'Train' : 'Bus';
-            const routeIdParts = dep.routeId.split(':');
-            const routeNumber = routeIdParts[routeIdParts.length - 1];
-            allDepartures.push({
-              stopName: stopData.name, vehicleType: vehicleType, routeNumber: routeNumber, headsign: dep.headsign,
-              scheduledDepartureUtc: dep.scheduledDepartureUtc,
-              expectedDepartureUtc: dep.realtime ? dep.realtime.expectedDepartureUtc : null,
-              departureDescription: dep.departureDescription,
-              destinationInfo: vehicleType === 'Bus' ? (BUS_ROUTE_INFO[routeNumber] || null) : null
-            });
-          }
-        });
-      }
-    });
+app.get('/api/trip-details', async (req, res) => {
+    const { trip_id, stop_sequence } = req.query;
+    if (!trip_id || !stop_sequence) { return res.status(400).json({ error: 'trip_id and stop_sequence are required.' }); }
+    try {
+        const { rows } = await pool.query(`
+            SELECT s.stop_name, st.departure_time FROM stop_times st
+            JOIN stops s ON st.stop_id = s.stop_id
+            WHERE st.trip_id = $1 AND st.stop_sequence > $2
+            ORDER BY st.stop_sequence;
+        `, [trip_id, stop_sequence]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Trip details query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch trip details.' });
+    }
+});
 
-    if (allDepartures.length === 0) return res.json([]);
-
-    const referenceApiDate = new Date(allDepartures[0].scheduledDepartureUtc);
-    const currentServerTime = new Date();
-    const now = new Date(Date.UTC(
-        referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate(),
-        currentServerTime.getUTCHours(), currentServerTime.getUTCMinutes(), currentServerTime.getUTCSeconds()
-    ));
-
-    allDepartures.forEach(dep => {
-        const departureTime = new Date(dep.expectedDepartureUtc || dep.scheduledDepartureUtc);
-        dep.secondsUntilDeparture = Math.round((departureTime - now) / 1000);
-    });
-
-    allDepartures.sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
-    
-    res.json(allDepartures);
-  } catch (error) {
-    console.error('An error occurred in /api/departures:', error);
-    res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });
-  }
-}
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

@@ -17,6 +17,7 @@
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "node-fetch": "^2.7.0",
+    "protobufjs": "^7.5.4",
     "yauzl-promise": "^4.0.0"
   }
 }

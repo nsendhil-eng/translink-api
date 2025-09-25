@@ -8,20 +8,12 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .suggestion-item:hover { background-color: #104866; }
+        .suggestion-item:hover { background-color: #bae6fd; }
         .dark .suggestion-item:hover { background-color: #1e40af; }
         .child-stop { border-left: 2px solid #3b82f6; }
         .filter-btn-active { background-color: #2563eb; color: white; }
-        
-        /* --- NEW: Style for already selected items in the dropdown --- */
-        .suggestion-selected {
-            opacity: 0.6;
-            cursor: not-allowed;
-            background-color: #f6f9ff !important; /* light gray, !important to override hover */
-        }
-        .dark .suggestion-selected {
-            background-color: #374151 !important; /* dark gray */
-        }
+        .suggestion-selected { opacity: 0.6; cursor: not-allowed; background-color: #e5e7eb !important; }
+        .dark .suggestion-selected { background-color: #374151 !important; }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 py-12 px-4">
@@ -46,14 +38,12 @@
                 </button>
             </div>
             <div id="search-options" class="mt-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg hidden">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <span class="font-semibold mr-3">Filter by type:</span>
-                        <div class="inline-flex rounded-md shadow-sm" role="group">
-                            <button type="button" data-type="3" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Bus</button>
-                            <button type="button" data-type="0,1,2" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border-t border-b border-gray-200 hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Train</button>
-                            <button type="button" data-type="4" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border border-gray-200 rounded-r-md hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Ferry</button>
-                        </div>
+                <div>
+                    <span class="font-semibold mr-3">Filter by type:</span>
+                    <div class="inline-flex rounded-md shadow-sm" role="group">
+                        <button type="button" data-type="3" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border border-gray-200 rounded-l-lg hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Bus</button>
+                        <button type="button" data-type="0,1,2" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border-t border-b border-gray-200 hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Train</button>
+                        <button type="button" data-type="4" class="filter-btn px-4 py-2 text-sm font-medium text-gray-900 bg-white border border-gray-200 rounded-r-md hover:bg-gray-100 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:hover:text-white dark:hover:bg-gray-600">Ferry</button>
                     </div>
                 </div>
             </div>
@@ -64,13 +54,84 @@
     </div>
 
     <script>
+        const VEHICLE_ICONS = {
+            Bus: `<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 8a2 2 0 00-2-2H4a2 2 0 00-2 2v4a2 2 0 002 2h1v1a1 1 0 102 0v-1h8v1a1 1 0 102 0v-1h1a2 2 0 002-2V8zm-6 3H8V8h4v3zm2-5a1 1 0 100-2 1 1 0 000 2zM6 6a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>`,
+            Train: `<svg height="800px" width="800px" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+	 viewBox="0 0 512 512"  xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#000000;}
+</style>
+<g>
+	<path class="st0" d="M431.665,356.848V147.207c0-48.019-38.916-86.944-86.943-86.944h-40.363l4.812-42.824h8.813
+		c9.435,0,17.508,5.74,20.965,13.898l16.06-6.779V24.55C348.929,10.124,334.641,0.018,317.984,0L193.999,0.009
+		c-16.639,0.009-30.928,10.116-37.016,24.541l16.06,6.796c3.466-8.166,11.539-13.906,20.956-13.897h8.823l4.81,42.815h-40.354
+		c-48.01,0-86.942,38.924-86.942,86.944v209.641c0,36.403,26.483,66.736,61.208,72.773L87.011,512h48.488l22.378-33.823h196.264
+		L376.519,512h48.47l-54.516-82.379C405.182,423.576,431.665,393.252,431.665,356.848z M291.621,17.44l-4.803,42.824h-61.635
+		l-4.819-42.815L291.621,17.44z M180.715,99.299h150.57v25.095h-150.57V99.299z M135.413,180.409
+		c0-10.917,8.839-19.773,19.756-19.773h201.664c10.916,0,19.773,8.856,19.773,19.773v65.96c0,10.917-8.857,19.764-19.773,19.764
+		H155.168c-10.916,0-19.756-8.847-19.756-19.764V180.409z M154.232,378.495c-12.739,0-23.06-10.321-23.06-23.043
+		c0-12.739,10.321-23.052,23.06-23.052c12.722,0,23.043,10.313,23.043,23.052C177.275,368.174,166.954,378.495,154.232,378.495z
+		 M172.421,456.19l16.844-25.461h133.471l16.844,25.461H172.421z M357.768,378.495c-12.722,0-23.043-10.321-23.043-23.043
+		c0-12.739,10.321-23.052,23.043-23.052c12.739,0,23.06,10.313,23.06,23.052C380.828,368.174,370.507,378.495,357.768,378.495z"/>
+</g>
+</svg>`,
+            Ferry: `<svg version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+	 viewBox="0 0 512 512"  xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#000000;}
+</style>
+<g>
+	<rect x="168.256" y="213.47" class="st0" width="28.074" height="28.066"/>
+	<rect x="231.627" y="213.47" class="st0" width="28.074" height="28.066"/>
+	<rect x="295.006" y="213.47" class="st0" width="28.074" height="28.066"/>
+	<rect x="358.378" y="213.47" class="st0" width="28.074" height="28.066"/>
+	<path class="st0" d="M77.866,357.45l3.073-1.849c3.975-2.334,9.273-5.252,15.936-7.672c9.335-3.419,19.778-5.167,30.977-5.167
+		c12.785,0,24.284,2.164,34.566,6.447c6.847,2.842,12.123,6.046,15.974,8.394l2.511,1.51c1.994,1.171,3.196,1.779,4.228,2.157
+		c0.8,0.284,2.464,0.886,6.916,0.893c4.683-0.015,6.324-0.686,7.41-1.124c1.417-0.578,3.62-1.91,6.408-3.589l3.072-1.849
+		c3.974-2.334,9.274-5.252,15.935-7.672c9.335-3.419,19.78-5.167,30.978-5.167c12.777,0,24.268,2.164,34.558,6.439
+		c6.832,2.842,12.092,6.038,15.935,8.38l2.542,1.524c2.018,1.186,3.212,1.795,4.244,2.172c0.778,0.278,2.449,0.879,6.909,0.886
+		c4.674-0.015,6.315-0.686,7.401-1.124c1.417-0.578,3.62-1.91,6.408-3.589l3.074-1.849c3.974-2.334,9.273-5.252,15.935-7.672
+		c9.334-3.419,19.778-5.167,30.977-5.167c12.785,0,24.276,2.164,34.566,6.439c6.839,2.842,12.108,6.046,15.951,8.38l2.534,1.524
+		c2.01,1.179,3.203,1.787,4.251,2.172c0.778,0.278,2.45,0.879,6.917,0.886c4.675-0.015,6.316-0.686,7.402-1.124
+		c1.424-0.578,3.612-1.903,6.384-3.574l3.096-1.864c3.466-2.033,7.987-4.49,13.478-6.693l11.229-79.984H471.18l4.498-0.924
+		l-11.152-54.283h-34.266l-15.774-47.32h-36.052v-63.88H314.16l-10.066,63.88h-50.81l13.802-55.208h-42.283l-31.547,55.208h-41.121
+		L85.252,268.924H22.35l54.669,89.027C77.32,357.773,77.551,357.642,77.866,357.45z M160.708,182.169h41.698l31.547-55.207h12.939
+		l-13.809,55.207h170.034l15.774,47.321h32.772l8.103,39.434H104.468L160.708,182.169z M60.137,300.317H469.3l-2.072,14.788H69.217
+		L60.137,300.317z"/>
+	<path class="st0" d="M488.956,370.165c-4.713,1.71-8.618,3.828-11.937,5.776c-5.007,2.973-8.665,5.391-12.693,7.032
+		c-4.036,1.632-8.641,2.818-16.328,2.849c-6.824-0.015-11.245-0.986-14.965-2.318c-2.788-1.017-5.261-2.311-8.034-3.944
+		c-4.136-2.403-8.988-5.73-15.68-8.51c-6.694-2.781-15.019-4.66-25.339-4.629c-9.173-0.016-16.76,1.44-23.044,3.743
+		c-4.706,1.71-8.611,3.828-11.93,5.776c-5.007,2.973-8.672,5.391-12.693,7.032c-4.036,1.632-8.649,2.818-16.328,2.849
+		c-6.824-0.015-11.237-0.986-14.957-2.318c-2.788-1.017-5.252-2.311-8.025-3.944c-4.136-2.403-8.98-5.73-15.673-8.51
+		c-6.694-2.781-15.012-4.66-25.332-4.629c-9.172-0.016-16.759,1.44-23.044,3.743c-4.706,1.71-8.61,3.828-11.93,5.776
+		c-5.007,2.973-8.672,5.391-12.693,7.032c-4.036,1.632-8.649,2.818-16.336,2.849c-6.824-0.015-11.237-0.986-14.95-2.318
+		c-2.796-1.017-5.26-2.311-8.04-3.944c-4.129-2.403-8.973-5.73-15.674-8.51c-6.686-2.781-15.012-4.66-25.332-4.629
+		c-9.172-0.016-16.76,1.44-23.044,3.743c-4.706,1.71-8.611,3.828-11.93,5.776c-5.006,2.973-8.672,5.391-12.693,7.032
+		c-4.036,1.632-8.65,2.818-16.328,2.849c-6.824-0.015-11.237-0.986-14.957-2.318c-2.796-1.017-5.26-2.311-8.034-3.944
+		c-4.136-2.403-8.98-5.73-15.68-8.51c-6.694-2.781-15.019-4.66-25.332-4.629v23.66c6.824,0.015,11.237,0.986,14.956,2.318
+		c2.789,1.017,5.26,2.311,8.034,3.944c4.136,2.395,8.981,5.73,15.681,8.51c6.685,2.781,15.011,4.66,25.332,4.629
+		c9.181,0.016,16.759-1.44,23.044-3.743c4.705-1.718,8.611-3.827,11.93-5.776c5.006-2.974,8.672-5.392,12.692-7.032
+		c4.036-1.632,8.649-2.819,16.328-2.85c6.824,0.015,11.238,0.986,14.957,2.318c2.788,1.017,5.26,2.311,8.034,3.944
+		c4.136,2.395,8.98,5.73,15.673,8.51c6.693,2.781,15.019,4.66,25.332,4.629c9.181,0.016,16.767-1.44,23.052-3.743
+		c4.705-1.71,8.611-3.827,11.93-5.776c5.006-2.974,8.672-5.392,12.692-7.032c4.036-1.632,8.65-2.819,16.328-2.85
+		c6.824,0.015,11.237,0.986,14.95,2.318c2.789,1.017,5.26,2.311,8.033,3.944c4.136,2.395,8.981,5.73,15.674,8.51
+		c6.686,2.781,15.011,4.66,25.331,4.629c9.173,0.016,16.76-1.44,23.044-3.743c4.706-1.718,8.611-3.827,11.93-5.776
+		c5.006-2.974,8.664-5.392,12.693-7.032c4.036-1.632,8.649-2.819,16.328-2.85c6.823,0.015,11.245,0.986,14.964,2.318
+		c2.789,1.017,5.26,2.311,8.034,3.944c4.136,2.403,8.981,5.738,15.681,8.51c6.693,2.781,15.019,4.66,25.339,4.629
+		c9.18,0.016,16.76-1.44,23.044-3.743c4.706-1.718,8.618-3.827,11.93-5.776c5.014-2.974,8.672-5.392,12.701-7.032
+		c4.028-1.632,8.642-2.819,16.328-2.85v-23.66C502.819,366.407,495.241,367.863,488.956,370.165z"/>
+</g>
+</svg>`
+        };
+
         const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
-        const VERCEL_URL = 'https://transit.sn-app.space';
+        const VERCEL_URL = 'https://transit.sendhil.com.au';
         const LOCAL_URL = 'http://localhost:3001';
         const BASE_URL = isLocal ? LOCAL_URL : VERCEL_URL;
         const API_ENDPOINT = `${BASE_URL}/api/departures`;
         const findNearMeEndpoint = `${BASE_URL}/api/stops-near-me`;
         const searchStopsEndpoint = `${BASE_URL}/api/search-stops`;
+        const tripDetailsEndpoint = `${BASE_URL}/api/trip-details`;
         
         const departuresContainer = document.getElementById('departures-container');
         const currentTimeEl = document.getElementById('currentTime');
@@ -81,14 +142,12 @@
         const findNearMeBtn = document.getElementById('find-near-me-btn');
         const searchOptionsContainer = document.getElementById('search-options');
         
-        let ALL_STOPS_DATA = [];
+        let ALL_STOPS_DATA = [ { name: 'Auchenflower Station, platform 2', id: '600284', stop_code: '600284' }, { name: 'Auchenflower Station, platform 4', id: '600286', stop_code: '600286' }, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951', stop_code: '001951' }];
         let selectedStops = [];
         let searchDebounceTimer;
-        
         let lastSearchCoords = null;
         let currentRadius = 500;
         let activeTypes = [];
-
         let cachedPosition = null;
         let positionCacheTimestamp = null;
         const CACHE_DURATION_MS = 60 * 1000;
@@ -113,12 +172,14 @@
         
         async function fetchAndRenderDepartures() {
             let url = API_ENDPOINT;
-            if (selectedStops.length > 0) { url += `?stops=${selectedStops.join(',')}`; }
+            if (selectedStops.length > 0) {
+                const stopCodes = selectedStops.map(stop => stop.code).join(',');
+                url += `?stops=${stopCodes}`;
+            }
             try {
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-                const allDepartures = await response.json();
-                const upcomingDepartures = allDepartures.filter(dep => (dep.secondsUntilDeparture > -60)).slice(0, 10);
+                const upcomingDepartures = await response.json();
                 departuresContainer.innerHTML = '';
                 lastUpdatedEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
                 if (upcomingDepartures.length === 0) {
@@ -127,22 +188,44 @@
                 }
                 upcomingDepartures.forEach(dep => {
                     const card = document.createElement('div');
-                    card.className = 'bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg flex items-start gap-4';
+                    card.className = 'bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg flex flex-col';
                     const dueInText = formatTimeRemaining(dep.secondsUntilDeparture);
-                    const isBus = dep.vehicleType === 'Bus';
-                    const iconBgColor = isBus ? 'bg-blue-500' : 'bg-green-600';
-                    const iconContent = dep.routeNumber ;
-                    const iconHTML = `<div class="flex-shrink-0 ${iconBgColor} text-white w-20 h-20 rounded-lg flex items-center justify-center text-3xl font-bold">${iconContent}</div>`;
-                    const destinationHTML = isBus && dep.destinationInfo ? `<p class="text-sm text-gray-600 dark:text-gray-400 mt-1 font-medium">📍 ${dep.destinationInfo}</p>` : '';
                     const scheduledTime = formatBrisbaneTime(dep.scheduledDepartureUtc);
                     const expectedTime = formatBrisbaneTime(dep.expectedDepartureUtc);
                     const expectedHTML = dep.expectedDepartureUtc && (expectedTime !== scheduledTime) ? `<div class="font-semibold text-green-600 dark:text-green-400">Expected: ${expectedTime}</div>` : '';
-                    card.innerHTML = `${iconHTML}<div class="flex-grow"><h3 class="text-sm sm:text-lg font-bold">${dep.stopName}</h3>${destinationHTML}</div><div class="text-right flex-shrink-0"><div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}<div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div></div>`;
+                    let cardContentHTML = '';
+
+                    if (dep.vehicleType === 'Train') {
+                        const trainLine = dep.routeLongName ? dep.routeLongName.split(' - ').pop() : dep.headsign;
+                        const routeColor = dep.routeColor;
+                        const routeTextColor = dep.routeTextColor;
+                        const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
+                        const fallbackClass = (!routeColor || !routeTextColor) ? 'bg-green-600' : '';
+                        cardContentHTML = `<div class="flex items-start gap-4 w-full">
+                            <div class="flex-shrink-0 text-white w-10 h-12 rounded-lg flex items-center justify-center text-3xl font-bold ${fallbackClass}" ${styles}>${VEHICLE_ICONS.Train}</div>
+                            <div class="flex-grow">
+                                <p class="text-lg font-semibold text-gray-900 dark:text-white">${trainLine}</p>
+                                <h3 class="text-sm sm:text-lg font-medium text-gray-600 dark:text-gray-400">${dep.headsign}</h3>
+                                <p class="text-sm sm:text-lg font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</p>
+                            </div>
+                            <div class="text-right flex-shrink-0">
+                                <div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}
+                                <div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div></div></div>`;
+                    } else {
+                        const iconContent = dep.vehicleType === 'Ferry' ? VEHICLE_ICONS.Ferry : dep.routeNumber;
+                        let iconBgColor = 'bg-blue-500';
+                        const routeColor = dep.routeColor;
+                        const routeTextColor = dep.routeTextColor;
+                        const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
+                        if (dep.vehicleType === 'Ferry') iconBgColor = dep.routeColor;
+                        cardContentHTML = `<div class="flex items-start gap-4 w-full"><div class="flex-shrink-0 ${iconBgColor} text-white w-12 h-12 rounded-lg flex items-center justify-center text-lg font-bold" ${styles}>${iconContent}</div><div class="flex-grow"><p class="text-lg font-semibold text-gray-900 dark:text-white">${dep.headsign}</p><h3 class="text-sm sm:text-lg font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}<div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div></div></div>`;
+                    }
+                    card.innerHTML = `${cardContentHTML}<div class="w-full flex justify-end mt-2"><button class="more-details-btn text-sm text-blue-500 font-semibold" data-trip-id="${dep.trip_id}" data-stop-sequence="${dep.stop_sequence}">More ↓</button></div><div class="trip-details-container mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 hidden"></div>`;
                     departuresContainer.appendChild(card);
                 });
             } catch (error) {
                 console.error('Failed to fetch departures:', error);
-                departuresContainer.innerHTML = `<div class="bg-red-500 p-4 rounded-lg" role="alert"><p class="font-bold">Connection Error</p><p>Could not load data. Ensure the local server is running.</p></div>`;
+                departuresContainer.innerHTML = `<div class="bg-yellow-100 p-4 rounded-lg" role="alert"><p class="font-bold">Could Not Load Departures</p><p>${error.message}</p></div>`;
             }
         }
         
@@ -192,12 +275,10 @@
 
         function renderSelectedStopTags() {
             selectedStopsContainer.innerHTML = '';
-            selectedStops.forEach(stopCode => {
-                const stop = ALL_STOPS_DATA.find(s => s.stop_code === stopCode);
-                if (!stop) return;
+            selectedStops.forEach(stop => {
                 const tag = document.createElement('div');
                 tag.className = 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm font-semibold px-3 py-1 rounded-full flex items-center gap-2';
-                tag.innerHTML = `<span>${stop.name}</span><button data-code="${stop.stop_code}" class="remove-tag-btn font-bold">×</button>`;
+                tag.innerHTML = `<span>${stop.name}</span><button data-code="${stop.code}" class="remove-tag-btn font-bold">×</button>`;
                 selectedStopsContainer.appendChild(tag);
             });
         }
@@ -284,18 +365,14 @@
                 return;
             }
             if (suggestionItem) {
-                // --- THIS IS THE MODIFIED LOGIC ---
-                // 1. Prevent action if already selected
-                if (suggestionItem.classList.contains('suggestion-selected')) {
-                    return;
-                }
-                const stopCode = suggestionItem.dataset.code; 
-                if (stopCode && !selectedStops.includes(stopCode)) {
-                    selectedStops.push(stopCode);
+                if (suggestionItem.classList.contains('suggestion-selected')) { return; }
+                const stopId = suggestionItem.dataset.id;
+                const stop = ALL_STOPS_DATA.find(s => s.id === stopId);
+                if (stop && !selectedStops.some(s => s.code === stop.stop_code)) {
+                    selectedStops.push({ code: stop.stop_code, name: stop.name });
                     renderSelectedStopTags();
                     fetchAndRenderDepartures();
                 }
-                // 2. Add class to show it's selected, but keep dropdown open
                 suggestionItem.classList.add('suggestion-selected');
             }
             if (parentToggle) {
@@ -309,15 +386,11 @@
         selectedStopsContainer.addEventListener('click', (e) => {
             if (e.target.matches('.remove-tag-btn')) {
                 const stopCodeToRemove = e.target.dataset.code;
-                selectedStops = selectedStops.filter(code => code !== stopCodeToRemove);
+                selectedStops = selectedStops.filter(stop => stop.code !== stopCodeToRemove);
                 renderSelectedStopTags();
                 fetchAndRenderDepartures();
-
-                // Un-disable the item in the dropdown
                 const deselectedItem = suggestionsContainer.querySelector(`[data-code="${stopCodeToRemove}"]`);
-                if (deselectedItem) {
-                    deselectedItem.classList.remove('suggestion-selected');
-                }
+                if (deselectedItem) { deselectedItem.classList.remove('suggestion-selected'); }
             }
         });
 
@@ -325,7 +398,6 @@
             if (!navigator.geolocation) { return alert('Geolocation is not supported by your browser.'); }
             
             if (cachedPosition && positionCacheTimestamp && (new Date() - positionCacheTimestamp < CACHE_DURATION_MS)) {
-                console.log("Using cached location.");
                 lastSearchCoords = cachedPosition.coords;
                 currentRadius = 500;
                 activeTypes = [];
@@ -336,16 +408,13 @@
 
             findNearMeBtn.querySelector('span').textContent = 'Acquiring GPS...';
             findNearMeBtn.disabled = true;
-
             currentRadius = 500;
             activeTypes = [];
             document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('filter-btn-active'));
-            
             const geoOptions = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
 
             navigator.geolocation.getCurrentPosition(
                 (position) => {
-                    console.log("Acquired new location, updating cache.");
                     cachedPosition = position;
                     positionCacheTimestamp = new Date();
                     lastSearchCoords = position.coords;
@@ -375,6 +444,33 @@
         document.addEventListener('click', (e) => {
             if (!e.target.closest('section')) {
                 suggestionsContainer.classList.add('hidden');
+            }
+        });
+        
+        departuresContainer.addEventListener('click', async (e) => {
+            if (e.target.matches('.more-details-btn')) {
+                const button = e.target;
+                const detailsContainer = button.closest('.flex-col').querySelector('.trip-details-container');
+                const isHidden = detailsContainer.classList.toggle('hidden');
+                if (!isHidden) {
+                    button.textContent = 'Loading...';
+                    const { tripId, stopSequence } = button.dataset;
+                    try {
+                        const response = await fetch(`${tripDetailsEndpoint}?trip_id=${tripId}&stop_sequence=${stopSequence}`);
+                        const upcomingStops = await response.json();
+                        if (upcomingStops.length > 0) {
+                            detailsContainer.innerHTML = `<p class="font-semibold text-sm mb-1">Upcoming Stops:</p><ol class="list-decimal list-inside text-sm text-gray-600 dark:text-gray-400 space-y-1">${upcomingStops.map(stop => `<li>${stop.stop_name}</li>`).join('')}</ol>`;
+                        } else {
+                            detailsContainer.innerHTML = `<p class="text-sm text-gray-500">This is the last stop.</p>`;
+                        }
+                        button.textContent = 'Less ↑';
+                    } catch (error) {
+                        detailsContainer.innerHTML = `<p class="text-sm text-red-500">Could not load trip details.</p>`;
+                        button.textContent = 'Retry';
+                    }
+                } else {
+                    button.textContent = 'More ↓';
+                }
             }
         });
 
