@@ -6,6 +6,9 @@
     <title>My Commute Timetable</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+     crossorigin=""/>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .suggestion-item:hover { background-color: #bae6fd; }
@@ -14,11 +17,23 @@
         .filter-btn-active { background-color: #2563eb; color: white; }
         .suggestion-selected { opacity: 0.6; cursor: not-allowed; background-color: #e5e7eb !important; }
         .dark .suggestion-selected { background-color: #374151 !important; }
+        #map { height: 300px; }
+        .user-location-marker .pulse {
+            animation: pulse-animation 2s infinite;
+        }
+        @keyframes pulse-animation {
+            0% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(29, 78, 216, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
+        }
+        .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+            background: #1f2937; /* dark:bg-gray-800 */
+            color: #d1d5db; /* dark:text-gray-300 */
+        }
     </style>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 py-12 px-4">
-
-    <div class="w-full max-w-2xl mx-auto">
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 h-full">
+    <div class="w-full max-w-2xl mx-auto py-12 px-4">
         <header class="text-center mb-8">
             <h1 class="text-4xl font-bold text-gray-900 dark:text-white">My Commute</h1>
             <p id="currentTime" class="text-lg text-gray-600 dark:text-gray-400 mt-2"></p>
@@ -26,6 +41,7 @@
         </header>
         
         <section class="mb-8">
+            <div id="map" class="w-full rounded-lg shadow-lg mb-8 hidden"></div>
             <div class="flex flex-col sm:flex-row gap-2 items-center">
                 <div class="relative flex-grow w-full">
                     <input type="text" id="stop-search-input" placeholder="Search for a stop (e.g., Wesley)..."
@@ -53,10 +69,51 @@
         <main id="departures-container" class="space-y-4"></main>
     </div>
 
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+     crossorigin=""></script>
     <script>
         const VEHICLE_ICONS = {
-            Bus: `<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 8a2 2 0 00-2-2H4a2 2 0 00-2 2v4a2 2 0 002 2h1v1a1 1 0 102 0v-1h8v1a1 1 0 102 0v-1h1a2 2 0 002-2V8zm-6 3H8V8h4v3zm2-5a1 1 0 100-2 1 1 0 000 2zM6 6a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" /></svg>`,
-            Train: `<svg height="800px" width="800px" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+            Bus: `<svg class="w-7 h-7" fill="#000000" viewBox="0 0 128 128" version="1.1" xml:space="preserve" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+
+<g id="Train"/>
+
+<g id="Car"/>
+
+<g id="Taxi"/>
+
+<g id="Truk"/>
+
+<g id="Cruise"/>
+
+<g id="Railway"/>
+
+<g id="Trem"/>
+
+<g id="Bus">
+
+<path d="M99.1,40H28.9c-3.2,0-5.9,2.6-5.9,5.8v29.5c0,3.2,2.6,5.8,5.9,5.8h3.2c0.5,3.9,3.9,7,7.9,7s7.4-3.1,7.9-7h34.1   c0.5,3.9,3.9,7,7.9,7s7.4-3.1,7.9-7h1.2c3.2,0,5.9-2.6,5.9-5.8V45.8C105,42.6,102.4,40,99.1,40z M43,47v9.9L39.4,63H25V47H43z    M40,86c-3.3,0-6-2.7-6-6s2.7-6,6-6s6,2.7,6,6S43.3,86,40,86z M90,86c-3.3,0-6-2.7-6-6s2.7-6,6-6s6,2.7,6,6S93.3,86,90,86z    M103,75.2c0,2.1-1.7,3.8-3.9,3.8h-1.2c0-0.1,0-0.2-0.1-0.4c0-0.1,0-0.2-0.1-0.3c0-0.2-0.1-0.3-0.1-0.5c0-0.1,0-0.2-0.1-0.3   c-0.1-0.2-0.2-0.5-0.3-0.7c0,0,0,0,0,0c-0.1-0.2-0.2-0.4-0.3-0.6c0-0.1-0.1-0.1-0.1-0.2c-0.1-0.1-0.2-0.3-0.3-0.4   c-0.1-0.1-0.1-0.2-0.2-0.2c-0.1-0.1-0.2-0.2-0.3-0.4c-0.1-0.1-0.1-0.2-0.2-0.2c-0.1-0.1-0.2-0.2-0.3-0.3c-0.1-0.1-0.2-0.2-0.2-0.2   c-0.1-0.1-0.2-0.2-0.3-0.3c-0.1-0.1-0.2-0.1-0.3-0.2c-0.1-0.1-0.2-0.2-0.3-0.2c-0.1-0.1-0.2-0.1-0.3-0.2c-0.1-0.1-0.2-0.1-0.4-0.2   c-0.1-0.1-0.2-0.1-0.3-0.2c-0.1-0.1-0.3-0.1-0.4-0.2c-0.1,0-0.2-0.1-0.3-0.1c-0.1-0.1-0.3-0.1-0.4-0.1c-0.1,0-0.2-0.1-0.3-0.1   c-0.1,0-0.3-0.1-0.4-0.1c-0.1,0-0.2-0.1-0.3-0.1c-0.2,0-0.3-0.1-0.5-0.1c-0.1,0-0.2,0-0.3,0c-0.3,0-0.5,0-0.8,0s-0.5,0-0.8,0   c-0.1,0-0.2,0-0.3,0c-0.2,0-0.3,0-0.5,0.1c-0.1,0-0.2,0-0.3,0.1c-0.1,0-0.3,0.1-0.4,0.1c-0.1,0-0.2,0.1-0.3,0.1   c-0.1,0-0.3,0.1-0.4,0.1c-0.1,0-0.2,0.1-0.3,0.1c-0.1,0.1-0.3,0.1-0.4,0.2C86.2,73,86.1,73,86,73.1c-0.1,0.1-0.2,0.1-0.4,0.2   c-0.1,0.1-0.2,0.1-0.3,0.2c-0.1,0.1-0.2,0.2-0.3,0.2c-0.1,0.1-0.2,0.1-0.3,0.2c-0.1,0.1-0.2,0.2-0.3,0.3c-0.1,0.1-0.2,0.1-0.2,0.2   c-0.1,0.1-0.2,0.2-0.3,0.3c-0.1,0.1-0.1,0.2-0.2,0.2c-0.1,0.1-0.2,0.2-0.3,0.4c-0.1,0.1-0.1,0.2-0.2,0.2c-0.1,0.1-0.2,0.3-0.3,0.4   c0,0.1-0.1,0.1-0.1,0.2c-0.1,0.2-0.2,0.4-0.3,0.6c0,0,0,0,0,0c-0.1,0.2-0.2,0.5-0.3,0.7c0,0.1,0,0.2-0.1,0.3c0,0.2-0.1,0.3-0.1,0.5   c0,0.1,0,0.2-0.1,0.3c0,0.1,0,0.2-0.1,0.4H47.9c0-0.1,0-0.2-0.1-0.4c0-0.1,0-0.2-0.1-0.3c0-0.2-0.1-0.3-0.1-0.5   c0-0.1,0-0.2-0.1-0.3c-0.1-0.2-0.2-0.5-0.3-0.7c0,0,0,0,0,0c-0.1-0.2-0.2-0.4-0.3-0.6c0-0.1-0.1-0.1-0.1-0.2   c-0.1-0.1-0.2-0.3-0.3-0.4c-0.1-0.1-0.1-0.2-0.2-0.2c-0.1-0.1-0.2-0.2-0.3-0.4c-0.1-0.1-0.1-0.2-0.2-0.2c-0.1-0.1-0.2-0.2-0.3-0.3   c-0.1-0.1-0.2-0.2-0.2-0.2c-0.1-0.1-0.2-0.2-0.3-0.3c-0.1-0.1-0.2-0.1-0.3-0.2c-0.1-0.1-0.2-0.2-0.3-0.2c-0.1-0.1-0.2-0.1-0.3-0.2   c-0.1-0.1-0.2-0.1-0.4-0.2c-0.1-0.1-0.2-0.1-0.3-0.2c-0.1-0.1-0.3-0.1-0.4-0.2c-0.1,0-0.2-0.1-0.3-0.1c-0.1-0.1-0.3-0.1-0.4-0.1   c-0.1,0-0.2-0.1-0.3-0.1c-0.1,0-0.3-0.1-0.4-0.1c-0.1,0-0.2-0.1-0.3-0.1c-0.2,0-0.3-0.1-0.5-0.1c-0.1,0-0.2,0-0.3,0   c-0.3,0-0.5,0-0.8,0s-0.5,0-0.8,0c-0.1,0-0.2,0-0.3,0c-0.2,0-0.3,0-0.5,0.1c-0.1,0-0.2,0-0.3,0.1c-0.1,0-0.3,0.1-0.4,0.1   c-0.1,0-0.2,0.1-0.3,0.1c-0.1,0-0.3,0.1-0.4,0.1c-0.1,0-0.2,0.1-0.3,0.1c-0.1,0.1-0.3,0.1-0.4,0.2C36.2,73,36.1,73,36,73.1   c-0.1,0.1-0.2,0.1-0.4,0.2c-0.1,0.1-0.2,0.1-0.3,0.2c-0.1,0.1-0.2,0.2-0.3,0.2c-0.1,0.1-0.2,0.1-0.3,0.2c-0.1,0.1-0.2,0.2-0.3,0.3   c-0.1,0.1-0.2,0.1-0.2,0.2c-0.1,0.1-0.2,0.2-0.3,0.3c-0.1,0.1-0.1,0.2-0.2,0.2c-0.1,0.1-0.2,0.2-0.3,0.4c-0.1,0.1-0.1,0.2-0.2,0.2   c-0.1,0.1-0.2,0.3-0.3,0.4c0,0.1-0.1,0.1-0.1,0.2c-0.1,0.2-0.2,0.4-0.3,0.6c0,0,0,0,0,0c-0.1,0.2-0.2,0.5-0.3,0.7   c0,0.1,0,0.2-0.1,0.3c0,0.2-0.1,0.3-0.1,0.5c0,0.1,0,0.2-0.1,0.3c0,0.1,0,0.2-0.1,0.4h-3.2c-2.1,0-3.9-1.7-3.9-3.8V65h15   c0.4,0,0.7-0.2,0.9-0.5l4-6.9c0.1-0.2,0.1-0.3,0.1-0.5V47h3v12c0,0.6,0.4,1,1,1h48c0.6,0,1-0.4,1-1V47h2v-2h-3H49H25.1   c0.4-1.7,1.9-3,3.8-3h70.2c2.1,0,3.9,1.7,3.9,3.8V75.2z M96,47v11H86V47H96z M84,58H74V47h10V58z M72,58H62V47h10V58z M60,58H50V47   h10V58z"/>
+
+</g>
+
+<g id="Yatch"/>
+
+<g id="pLANE"/>
+
+<g id="Bicycle"/>
+
+<g id="Halte"/>
+
+<g id="Bus_Stop"/>
+
+<g id="Station"/>
+
+<g id="Airport"/>
+
+<g id="Layer_17"/>
+
+</svg>`,
+            Train: `<svg class="w-7 h-7" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
 	 viewBox="0 0 512 512"  xml:space="preserve">
 <style type="text/css">
 	.st0{fill:#000000;}
@@ -75,7 +132,7 @@
 		c0-12.739,10.321-23.052,23.043-23.052c12.739,0,23.06,10.313,23.06,23.052C380.828,368.174,370.507,378.495,357.768,378.495z"/>
 </g>
 </svg>`,
-            Ferry: `<svg version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
+            Ferry: `<svg class="w-7 h-7" version="1.1" id="_x32_" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" 
 	 viewBox="0 0 512 512"  xml:space="preserve">
 <style type="text/css">
 	.st0{fill:#000000;}
@@ -151,6 +208,82 @@
         let cachedPosition = null;
         let positionCacheTimestamp = null;
         const CACHE_DURATION_MS = 60 * 1000;
+        let map = null;
+        let stopMarkers = [];
+
+        function initMap(lat, lon) {
+            document.getElementById('map').classList.remove('hidden');
+            if (map) {
+                map.setView([lat, lon], 15);
+            } else {
+                map = L.map('map').setView([lat, lon], 15);
+                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                    subdomains: 'abcd',
+                    maxZoom: 20
+                }).addTo(map);
+            }
+
+            const userIcon = L.divIcon({
+                html: `<div class="w-4 h-4 bg-blue-600 rounded-full pulse"></div>`,
+                className: 'user-location-marker',
+                iconSize: [16, 16],
+                iconAnchor: [8, 8]
+            });
+
+            L.marker([lat, lon], { icon: userIcon }).addTo(map)
+                .bindPopup('Your current location.')
+                .openPopup();
+        }
+
+        function getStopVehicleType(stop) {
+            if (!stop.route_types || stop.route_types.length === 0) return 'Bus'; // Default
+            if (stop.route_types.includes(4)) return 'Ferry';
+            if (stop.route_types.some(rt => [0, 1, 2].includes(rt))) return 'Train';
+            if (stop.route_types.includes(3)) return 'Bus';
+            return 'Bus'; // Fallback default
+        }
+
+        function plotStopsOnMap(stops) {
+            // Clear previous stop markers
+            stopMarkers.forEach(marker => marker.remove());
+            stopMarkers = [];
+
+            if (!map || stops.length === 0) return;
+
+            const bounds = L.latLngBounds();
+            // Add user's location to bounds
+            if (cachedPosition) {
+                bounds.extend([cachedPosition.coords.latitude, cachedPosition.coords.longitude]);
+            }
+
+            stops.forEach(stop => {
+                const vehicleType = getStopVehicleType(stop);
+                const iconSVG = VEHICLE_ICONS[vehicleType] || VEHICLE_ICONS.Bus;
+
+                const customIcon = L.divIcon({
+                    html: `<div class="p-1 bg-white rounded-full shadow-md">${iconSVG}</div>`,
+                    className: 'custom-map-marker', // to prevent default leaflet styles
+                    iconSize: [36, 36],
+                    iconAnchor: [18, 18]
+                });
+
+                const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(map).bindPopup(stop.name);
+                stopMarkers.push(marker);
+                bounds.extend([stop.latitude, stop.longitude]);
+            });
+
+            map.fitBounds(bounds, { padding: [50, 50] });
+        }
+
+        function initializeMapWithUserLocation() {
+            navigator.geolocation.getCurrentPosition(position => {
+                initMap(position.coords.latitude, position.coords.longitude);
+            }, () => {
+                // Fallback to a default location if user denies permission, e.g., Brisbane
+                initMap(-27.4698, 153.0251);
+            }, { enableHighAccuracy: true });
+        }
 
         function formatBrisbaneTime(utcDateString) {
             if (!utcDateString) return 'N/A';
@@ -329,6 +462,7 @@
                 }
                 const nearbyStops = await response.json();
                 renderSuggestions(nearbyStops);
+                plotStopsOnMap(nearbyStops);
                 const searchFurtherBtn = document.createElement('div');
                 searchFurtherBtn.id = 'search-further-btn';
                 searchFurtherBtn.className = 'p-3 text-center text-blue-600 dark:text-blue-400 font-semibold cursor-pointer suggestion-item';
@@ -474,6 +608,7 @@
             }
         });
 
+        initializeMapWithUserLocation();
         updateCurrentTime();
         fetchAndRenderDepartures();
         setInterval(updateCurrentTime, 1000);

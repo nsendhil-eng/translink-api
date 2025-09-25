@@ -36,8 +36,9 @@ app.get('/api/search-stops', async (req, res) => {
     const searchQuery = `%${q}%`;
     // FIX: Simplified query to only select columns that exist in the stable schema
     const { rows } = await pool.query(`
-      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station,
-             parent_stop.stop_name AS parent_station_name, s.servicing_routes, s.route_directions
+      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+             parent_stop.stop_name AS parent_station_name,
+             ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
       WHERE s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
@@ -57,8 +58,9 @@ app.get('/api/stops-near-me', async (req, res) => {
     const radiusInMeters = parseInt(radius, 10) || 500;
     const typeFilter = types ? types.split(',').map(Number) : null;
     let query = `
-      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station,
-             parent_stop.stop_name AS parent_station_name, s.servicing_routes, s.route_directions
+      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+             parent_stop.stop_name AS parent_station_name,
+             ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
       WHERE ST_DWithin(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
@@ -132,16 +134,18 @@ app.get('/api/departures', async (req, res) => {
 
         const enrichedDepartures = scheduledDepartures.map(s => {
             // --- ROBUST TIME CALCULATION LOGIC ---
-            const [h, m, sec] = s.departure_time.split(':').map(Number);
-            
-            // 1. Get the start of the service day in UTC
-            const serviceDayStart = new Date(Date.UTC(referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate()));
-            
-            // 2. Add the departure time as seconds from the start of the day. This correctly handles hours > 23.
-            const scheduledUtc = new Date(serviceDayStart.getTime() + (h * 3600 + m * 60 + sec) * 1000);
-            
-            // Adjust for Brisbane timezone (UTC+10)
-            scheduledUtc.setUTCHours(scheduledUtc.getUTCHours() - 10);
+            const [h, m, sec] = s.departure_time.split(':').map(Number); // e.g., [25, 15, 35]
+
+            // 1. Create a date object for the service day in Brisbane time.
+            // The dateString is 'YYYYMMDD'.
+            const year = parseInt(dateString.substring(0, 4), 10);
+            const month = parseInt(dateString.substring(4, 6), 10) - 1; // Month is 0-indexed
+            const day = parseInt(dateString.substring(6, 8), 10);
+
+            // 2. Create a UTC date and then set the hours, minutes, seconds from GTFS.
+            // This correctly handles hours > 23, which roll over to the next day.
+            const scheduledUtc = new Date(Date.UTC(year, month, day));
+            scheduledUtc.setUTCHours(h - 10, m, sec); // Set time and adjust for Brisbane (UTC+10)
             // --- END OF TIME LOGIC ---
 
             const key = `${s.route_short_name}-${scheduledUtc.toISOString()}`;
