@@ -59,7 +59,7 @@ app.get('/api/stops-near-me', async (req, res) => {
     const typeFilter = types ? types.split(',').map(Number) : null;
     let query = `
       SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
-             parent_stop.stop_name AS parent_station_name,
+             parent_stop.stop_name AS parent_station_name, ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance,
              ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
@@ -115,23 +115,22 @@ app.get('/api/departures', async (req, res) => {
             return res.json([]);
         }
 
-        const liveRequests = stopCodes.map(code => fetch(`https://jp.translink.com.au/api/stop/timetable/${code.trim()}`, fetchOptions).then(res => res.ok ? res.json() : Promise.resolve({ departures: [] })));
-        const liveResults = await Promise.all(liveRequests);
+        // --- CORRECT: Fetch and decode the GTFS-realtime protobuf feed ---
+        const liveResponse = await fetch(REALTIME_URL, fetchOptions);
+        if (!liveResponse.ok) {
+            throw new Error(`Failed to fetch live data: ${liveResponse.statusText}`);
+        }
+        const buffer = await liveResponse.arrayBuffer();
+        const feed = gtfsRealtime.decode(Buffer.from(buffer));
 
         const liveDataMap = new Map();
-        liveResults.forEach(stopData => {
-            stopData.departures?.forEach(dep => {
-                const key = `${dep.routeId.split(':').pop()}-${dep.scheduledDepartureUtc}`;
-                liveDataMap.set(key, dep);
-            });
+        feed.entity.forEach(entity => {
+            if (entity.tripUpdate) {
+                liveDataMap.set(entity.tripUpdate.trip.tripId, entity.tripUpdate.stopTimeUpdate);
+            }
         });
         
-        const referenceApiDate = new Date(liveResults.find(lr => lr.departures?.length > 0)?.departures[0].scheduledDepartureUtc || Date.now());
-        const synchronizedNow = new Date(Date.UTC(
-            referenceApiDate.getUTCFullYear(), referenceApiDate.getUTCMonth(), referenceApiDate.getUTCDate(),
-            now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()
-        ));
-
+        const synchronizedNow = new Date();
         const enrichedDepartures = scheduledDepartures.map(s => {
             // --- ROBUST TIME CALCULATION LOGIC ---
             const [h, m, sec] = s.departure_time.split(':').map(Number); // e.g., [25, 15, 35]
@@ -148,10 +147,15 @@ app.get('/api/departures', async (req, res) => {
             scheduledUtc.setUTCHours(h - 10, m, sec); // Set time and adjust for Brisbane (UTC+10)
             // --- END OF TIME LOGIC ---
 
-            const key = `${s.route_short_name}-${scheduledUtc.toISOString()}`;
-            const liveMatch = liveDataMap.get(key);
+            const stopTimeUpdates = liveDataMap.get(s.trip_id);
+            let expectedUtc = scheduledUtc.toISOString();
 
-            const expectedUtc = liveMatch?.realtime?.expectedDepartureUtc || scheduledUtc.toISOString();
+            if (stopTimeUpdates) {
+                const stopUpdate = stopTimeUpdates.find(stu => stu.stopSequence === s.stop_sequence);
+                if (stopUpdate && stopUpdate.departure && stopUpdate.departure.time) {
+                    expectedUtc = new Date(stopUpdate.departure.time.low * 1000).toISOString();
+                }
+            }
             const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
             
             let vehicleType = 'Train';
@@ -166,7 +170,7 @@ app.get('/api/departures', async (req, res) => {
                 routeNumber: s.route_short_name,
                 headsign: s.trip_headsign,
                 scheduledDepartureUtc: scheduledUtc.toISOString(),
-                expectedDepartureUtc: liveMatch?.realtime?.expectedDepartureUtc,
+                expectedDepartureUtc: (expectedUtc !== scheduledUtc.toISOString()) ? expectedUtc : null,
                 secondsUntilDeparture: secondsUntil,
                 routeLongName: s.route_long_name,
                 routeColor: s.route_color,

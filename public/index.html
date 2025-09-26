@@ -30,6 +30,9 @@
             background: #1f2937; /* dark:bg-gray-800 */
             color: #d1d5db; /* dark:text-gray-300 */
         }
+        .marker-selected {
+            filter: drop-shadow(0 0 5px #3b82f6) drop-shadow(0 0 10px #3b82f6);
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 h-full">
@@ -212,6 +215,7 @@
         let stopMarkers = [];
 
         function initMap(lat, lon) {
+            // ... (map initialization code)
             document.getElementById('map').classList.remove('hidden');
             if (map) {
                 map.setView([lat, lon], 15);
@@ -244,6 +248,14 @@
             return 'Bus'; // Fallback default
         }
 
+        function formatDistance(meters) {
+            if (meters === null || meters === undefined) return '';
+            if (meters < 1000) {
+                return `${Math.round(meters)} m`;
+            }
+            return `${(meters / 1000).toFixed(1)} km`;
+        }
+
         function plotStopsOnMap(stops) {
             // Clear previous stop markers
             stopMarkers.forEach(marker => marker.remove());
@@ -261,14 +273,23 @@
                 const vehicleType = getStopVehicleType(stop);
                 const iconSVG = VEHICLE_ICONS[vehicleType] || VEHICLE_ICONS.Bus;
 
+                const isSelected = selectedStops.some(s => s.code === stop.stop_code);
+
                 const customIcon = L.divIcon({
-                    html: `<div class="p-1 bg-white rounded-full shadow-md">${iconSVG}</div>`,
+                    html: `<div class="p-1 bg-white rounded-full shadow-md ${isSelected ? 'marker-selected' : ''}">${iconSVG}</div>`,
                     className: 'custom-map-marker', // to prevent default leaflet styles
                     iconSize: [36, 36],
                     iconAnchor: [18, 18]
                 });
 
-                const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(map).bindPopup(stop.name);
+                const popupContent = `
+                    <div class="font-semibold text-base">${stop.name} ${stop.distance ? `(${formatDistance(stop.distance)})` : ''}</div>
+                    <div class="text-sm text-gray-300 mt-1">
+                        <span class="font-medium">Routes:</span> ${formatServicingRoutes(stop.servicing_routes, stop.route_directions)}
+                    </div>`;
+
+                const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(map).bindPopup(popupContent);
+                marker.stopCode = stop.stop_code; // Attach stop code to marker for easy lookup
                 stopMarkers.push(marker);
                 bounds.extend([stop.latitude, stop.longitude]);
             });
@@ -326,6 +347,14 @@
                     const scheduledTime = formatBrisbaneTime(dep.scheduledDepartureUtc);
                     const expectedTime = formatBrisbaneTime(dep.expectedDepartureUtc);
                     const expectedHTML = dep.expectedDepartureUtc && (expectedTime !== scheduledTime) ? `<div class="font-semibold text-green-600 dark:text-green-400">Expected: ${expectedTime}</div>` : '';
+                    
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const isDebug = urlParams.get('debug') === 'true';
+                    const debugHTML = isDebug ? `
+                        <div class="mt-2 text-xs text-gray-400 bg-gray-100 dark:bg-gray-700 p-1 rounded">
+                            <p>Sch: ${dep.scheduledDepartureUtc}</p><p>Exp: ${dep.expectedDepartureUtc || 'N/A'}</p>
+                        </div>` : '';
+
                     let cardContentHTML = '';
 
                     if (dep.vehicleType === 'Train') {
@@ -343,7 +372,7 @@
                             </div>
                             <div class="text-right flex-shrink-0">
                                 <div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}
-                                <div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div></div></div>`;
+                                <div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div>${debugHTML}</div></div>`;
                     } else {
                         const iconContent = dep.vehicleType === 'Ferry' ? VEHICLE_ICONS.Ferry : dep.routeNumber;
                         let iconBgColor = 'bg-blue-500';
@@ -351,7 +380,7 @@
                         const routeTextColor = dep.routeTextColor;
                         const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
                         if (dep.vehicleType === 'Ferry') iconBgColor = dep.routeColor;
-                        cardContentHTML = `<div class="flex items-start gap-4 w-full"><div class="flex-shrink-0 ${iconBgColor} text-white w-12 h-12 rounded-lg flex items-center justify-center text-lg font-bold" ${styles}>${iconContent}</div><div class="flex-grow"><p class="text-lg font-semibold text-gray-900 dark:text-white">${dep.headsign}</p><h3 class="text-sm sm:text-lg font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}<div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div></div></div>`;
+                        cardContentHTML = `<div class="flex items-start gap-4 w-full"><div class="flex-shrink-0 ${iconBgColor} text-white w-12 h-12 rounded-lg flex items-center justify-center text-lg font-bold" ${styles}>${iconContent}</div><div class="flex-grow"><p class="text-lg font-semibold text-gray-900 dark:text-white">${dep.headsign}</p><h3 class="text-sm sm:text-lg font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="font-semibold text-gray-700 dark:text-gray-300">Scheduled: ${scheduledTime}</div>${expectedHTML}<div class="text-xl font-bold text-blue-600 dark:text-blue-400 mt-1">${dueInText}</div>${debugHTML}</div></div>`;
                     }
                     card.innerHTML = `${cardContentHTML}<div class="w-full flex justify-end mt-2"><button class="more-details-btn text-sm text-blue-500 font-semibold" data-trip-id="${dep.trip_id}" data-stop-sequence="${dep.stop_sequence}">More ↓</button></div><div class="trip-details-container mt-2 pt-2 border-t border-gray-200 dark:border-gray-700 hidden"></div>`;
                     departuresContainer.appendChild(card);
@@ -423,18 +452,27 @@
             const groupedStops = groupStops(stops);
             suggestionsContainer.innerHTML = '';
             if (groupedStops.length > 0) {
+                // Add a close button to the suggestions container
+                suggestionsContainer.innerHTML = `<div class="flex justify-end p-1"><button id="close-suggestions-btn" class="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 font-bold text-xl">&times;</button></div>`;
+
                 groupedStops.forEach(item => {
+                    const isSelected = (stopCode) => selectedStops.some(s => s.code === stopCode);
+                    const selectedClass = (stopCode) => isSelected(stopCode) ? 'suggestion-selected' : '';
+                    const selectedText = (stopCode) => isSelected(stopCode) ? '' : 'hidden';
+
                     if (item.is_parent) {
                         const groupEl = document.createElement('div');
+                        const distanceHTML = item.children[0].distance ? `<div class="text-sm text-gray-500 dark:text-gray-400 pr-2">${formatDistance(item.children[0].distance)}</div>` : '';
                         groupEl.className = 'border-b dark:border-gray-700';
-                        groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="text-blue-500 font-bold text-lg expand-icon">+</div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop" data-id="${child.id}" data-code="${child.stop_code}"><div class="font-semibold">${child.name}</div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                        groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center">${distanceHTML}<div class="text-blue-500 font-bold text-lg expand-icon">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
                         suggestionsContainer.appendChild(groupEl);
                     } else {
                         const itemEl = document.createElement('div');
-                        itemEl.className = 'p-3 cursor-pointer suggestion-item border-b dark:border-gray-700';
+                        const distanceHTML = item.distance ? `<div class="text-sm text-gray-500 dark:text-gray-400">${formatDistance(item.distance)}</div>` : '';
+                        itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.stop_code)}`;
                         itemEl.dataset.id = item.id;
                         itemEl.dataset.code = item.stop_code;
-                        itemEl.innerHTML = `<div class="font-semibold">${item.name}</div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
+                        itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.stop_code)}">✓ Selected</div>${distanceHTML}</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
                         suggestionsContainer.appendChild(itemEl);
                     }
                 });
@@ -492,22 +530,36 @@
         suggestionsContainer.addEventListener('click', (e) => {
             const suggestionItem = e.target.closest('.suggestion-item');
             const parentToggle = e.target.closest('.parent-toggle');
+            const closeBtn = e.target.closest('#close-suggestions-btn');
 
             if (e.target.id === 'search-further-btn') {
                 currentRadius += 500;
                 performNearbySearch();
                 return;
             }
+            if (closeBtn) {
+                suggestionsContainer.classList.add('hidden');
+                return;
+            }
             if (suggestionItem) {
-                if (suggestionItem.classList.contains('suggestion-selected')) { return; }
                 const stopId = suggestionItem.dataset.id;
                 const stop = ALL_STOPS_DATA.find(s => s.id === stopId);
-                if (stop && !selectedStops.some(s => s.code === stop.stop_code)) {
+                const isSelected = selectedStops.some(s => s.code === stop.stop_code);
+
+                if (stop && !isSelected) {
                     selectedStops.push({ code: stop.stop_code, name: stop.name });
-                    renderSelectedStopTags();
-                    fetchAndRenderDepartures();
+                } else if (stop && isSelected) {
+                    selectedStops = selectedStops.filter(s => s.code !== stop.stop_code);
                 }
-                suggestionItem.classList.add('suggestion-selected');
+
+                renderSelectedStopTags();
+                fetchAndRenderDepartures();
+                suggestionItem.classList.toggle('suggestion-selected');
+                suggestionItem.querySelector('.selection-status').classList.toggle('hidden');
+
+                // Toggle map marker highlight
+                const marker = stopMarkers.find(m => m.stopCode === stop.stop_code);
+                if (marker) marker.getElement().querySelector('.p-1').classList.toggle('marker-selected');
             }
             if (parentToggle) {
                 const childContainer = parentToggle.nextElementSibling;
@@ -524,7 +576,12 @@
                 renderSelectedStopTags();
                 fetchAndRenderDepartures();
                 const deselectedItem = suggestionsContainer.querySelector(`[data-code="${stopCodeToRemove}"]`);
-                if (deselectedItem) { deselectedItem.classList.remove('suggestion-selected'); }
+                if (deselectedItem) { 
+                    deselectedItem.classList.remove('suggestion-selected');
+                    deselectedItem.querySelector('.selection-status').classList.add('hidden');
+                }
+                const marker = stopMarkers.find(m => m.stopCode === stopCodeToRemove);
+                if (marker) marker.getElement().querySelector('.p-1').classList.remove('marker-selected');
             }
         });
 
