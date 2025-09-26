@@ -155,8 +155,11 @@ app.get('/api/departures', async (req, res) => {
                 if (stopUpdate && stopUpdate.departure && stopUpdate.departure.time) {
                     // The 'time' object from protobufjs is a Long.js object.
                     // We must convert it to a standard JavaScript number before using it.
-                    const departureTime = stopUpdate.departure.time.toNumber();
-                    expectedUtc = new Date(departureTime * 1000).toISOString();
+                    let departureTimestamp = stopUpdate.departure.time;
+                    if (typeof departureTimestamp === 'object' && typeof departureTimestamp.toNumber === 'function') {
+                        departureTimestamp = departureTimestamp.toNumber();
+                    }
+                    expectedUtc = new Date(departureTimestamp * 1000).toISOString();
                 }
             }
             const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
