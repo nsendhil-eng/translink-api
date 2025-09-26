@@ -153,7 +153,10 @@ app.get('/api/departures', async (req, res) => {
             if (stopTimeUpdates) {
                 const stopUpdate = stopTimeUpdates.find(stu => stu.stopSequence === s.stop_sequence);
                 if (stopUpdate && stopUpdate.departure && stopUpdate.departure.time) {
-                    expectedUtc = new Date(stopUpdate.departure.time.low * 1000).toISOString();
+                    // The 'time' object from protobufjs is a Long.js object.
+                    // We must convert it to a standard JavaScript number before using it.
+                    const departureTime = stopUpdate.departure.time.toNumber();
+                    expectedUtc = new Date(departureTime * 1000).toISOString();
                 }
             }
             const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
