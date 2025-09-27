@@ -11,12 +11,14 @@
      crossorigin=""/>
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .suggestion-item:hover { background-color: #bae6fd; }
-        .dark .suggestion-item:hover { background-color: #1e40af; }
+        /* Use a more subtle hover color */
+        .suggestion-item:hover { background-color: #f3f4f6; } /* bg-gray-100 */
+        .dark .suggestion-item:hover { background-color: #374151; } /* bg-gray-700 */
         .child-stop { border-left: 2px solid #3b82f6; }
         .filter-btn-active { background-color: #2563eb; color: white; }
-        .suggestion-selected { opacity: 0.6; cursor: not-allowed; background-color: #e5e7eb !important; }
-        .dark .suggestion-selected { background-color: #374151 !important; }
+        /* Make selected items stand out clearly without looking disabled */
+        .suggestion-selected { background-color: #dbeafe !important; } /* bg-blue-100 */
+        .dark .suggestion-selected { background-color: #1e3a8a !important; } /* dark:bg-blue-900 */
         #map { height: 300px; }
         .user-location-marker .pulse {
             animation: pulse-animation 2s infinite;
@@ -37,10 +39,11 @@
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 h-full">
     <div class="w-full max-w-2xl mx-auto py-12 px-4">
-        <header class="text-center mb-8">
+        <header class="text-center mb-8 relative">
             <h1 class="text-4xl font-bold text-gray-900 dark:text-white">My Commute</h1>
             <p id="currentTime" class="text-lg text-gray-600 dark:text-gray-400 mt-2"></p>
             <p id="last-updated" class="text-sm text-gray-500 dark:text-gray-400 mt-1"></p>
+            <div id="favorites-container" class="absolute top-0 right-0"></div>
         </header>
         
         <section class="mb-8">
@@ -192,6 +195,7 @@
         const findNearMeEndpoint = `${BASE_URL}/api/stops-near-me`;
         const searchStopsEndpoint = `${BASE_URL}/api/search-stops`;
         const tripDetailsEndpoint = `${BASE_URL}/api/trip-details`;
+        const GRAPHHOPPER_API_KEY = 'c83491d0-8e78-4539-9920-2690e1a91b57'; // <-- PASTE YOUR KEY HERE
         
         const departuresContainer = document.getElementById('departures-container');
         const currentTimeEl = document.getElementById('currentTime');
@@ -213,6 +217,31 @@
         const CACHE_DURATION_MS = 60 * 1000;
         let map = null;
         let stopMarkers = [];
+        let walkingRouteLayer = null;
+
+        function setCookie(name, value, days) {
+            let expires = "";
+            if (days) {
+                const date = new Date();
+                date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+                expires = "; expires=" + date.toUTCString();
+            }
+            document.cookie = name + "=" + (JSON.stringify(value) || "")  + expires + "; path=/";
+        }
+
+        function getCookie(name) {
+            const nameEQ = name + "=";
+            const ca = document.cookie.split(';');
+            for(let i=0; i < ca.length; i++) {
+                let c = ca[i];
+                while (c.charAt(0)==' ') c = c.substring(1,c.length);
+                if (c.indexOf(nameEQ) == 0) return JSON.parse(c.substring(nameEQ.length,c.length));
+            }
+            return null;
+        }
+
+        const WALKING_ICON = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9.47 4.97a.75.75 0 011.06 0l4.5 4.5a.75.75 0 01-1.06 1.06L10 6.56l-3.97 3.97a.75._75 0 01-1.06-1.06l4.5-4.5zM9.47 9.97a.75.75 0 011.06 0l4.5 4.5a.75.75 0 01-1.06 1.06L10 11.56l-3.97 3.97a.75.75 0 01-1.06-1.06l4.5-4.5z" clip-rule="evenodd" /></svg>`;
+        const WALKING_MAN_ICON = `<svg width="25px" height="25px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-labelledby="walkingIconTitle" stroke="#808080" stroke-width="1" stroke-linecap="square" stroke-linejoin="miter" color="#000000"> <title id="walkingIconTitle">Walking</title> <circle cx="13" cy="5" r="1"/> <path d="M15 20L14 17L11 14M11 14L12 9M11 14L8 20M12 9L15 12L17 13M12 9L9 11L8 14"/> </svg>`;
 
         function initMap(lat, lon) {
             // ... (map initialization code)
@@ -248,12 +277,49 @@
             return 'Bus'; // Fallback default
         }
 
+        function formatDuration(seconds) {
+            const minutes = Math.round(seconds / 60); // OSRM provides seconds
+            return `${minutes} min walk`;
+        }
+
         function formatDistance(meters) {
             if (meters === null || meters === undefined) return '';
             if (meters < 1000) {
                 return `${Math.round(meters)} m`;
             }
             return `${(meters / 1000).toFixed(1)} km`;
+        }
+
+        async function getWalkingDirections(stopLat, stopLon) {
+            if (!cachedPosition) {
+                alert('Could not get your current location for directions.');
+                return;
+            }
+            const { latitude: userLat, longitude: userLon } = cachedPosition.coords;
+            if (GRAPHHOPPER_API_KEY === 'YOUR_GRAPHHOPPER_API_KEY') {
+                alert('Please add your GraphHopper API key to the script to enable walking directions.');
+                return;
+            }
+            const url = `https://graphhopper.com/api/1/route?point=${userLat},${userLon}&point=${stopLat},${stopLon}&vehicle=foot&key=${GRAPHHOPPER_API_KEY}&points_encoded=false`;
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (data.paths && data.paths.length > 0) {
+                    if (walkingRouteLayer) walkingRouteLayer.remove();
+                    const path = data.paths[0];
+                    const routeLine = path.points;
+                    const distance = path.distance; // in meters
+                    const duration = path.time; // in milliseconds
+
+                    walkingRouteLayer = L.geoJSON(routeLine, { style: { color: '#888888', weight: 5, opacity: 0.8, dashArray: '5, 10' } }).addTo(map);
+                    walkingRouteLayer.bindPopup(`<b>${formatDistance(distance)}</b> (${formatDuration(duration / 1000)})`).openPopup();
+
+                    map.fitBounds(walkingRouteLayer.getBounds(), { padding: [50, 50] });
+                }
+            } catch (error) {
+                console.error('Failed to get walking directions:', error);
+            }
         }
 
         function plotStopsOnMap(stops) {
@@ -283,7 +349,8 @@
                 });
 
                 const popupContent = `
-                    <div class="font-semibold text-base">${stop.name} ${stop.distance ? `(${formatDistance(stop.distance)})` : ''}</div>
+                    <div class="font-semibold text-base flex items-center gap-2">${stop.name}
+                        <span class="walking-directions-btn" data-lat="${stop.latitude}" data-lon="${stop.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${stop.latitude}, ${stop.longitude})">${WALKING_MAN_ICON}</span></div>
                     <div class="text-sm text-gray-300 mt-1">
                         <span class="font-medium">Routes:</span> ${formatServicingRoutes(stop.servicing_routes, stop.route_directions)}
                     </div>`;
@@ -437,12 +504,61 @@
 
         function renderSelectedStopTags() {
             selectedStopsContainer.innerHTML = '';
+            if (selectedStops.length > 0) {
+                const saveFavBtn = document.createElement('button');
+                saveFavBtn.id = 'save-favorite-btn';
+                saveFavBtn.className = 'text-2xl hover:text-yellow-400 transition-colors';
+                saveFavBtn.title = 'Save as favorite';
+                saveFavBtn.innerHTML = '⭐';
+                selectedStopsContainer.appendChild(saveFavBtn);
+            }
             selectedStops.forEach(stop => {
                 const tag = document.createElement('div');
                 tag.className = 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm font-semibold px-3 py-1 rounded-full flex items-center gap-2';
                 tag.innerHTML = `<span>${stop.name}</span><button data-code="${stop.code}" class="remove-tag-btn font-bold">×</button>`;
                 selectedStopsContainer.appendChild(tag);
             });
+        }
+
+        function renderFavoritesDropdown() {
+            const favorites = getCookie('favoriteStops') || {};
+            const favoritesContainer = document.getElementById('favorites-container');
+            if (Object.keys(favorites).length === 0) {
+                favoritesContainer.innerHTML = '';
+                return;
+            }
+
+            const favoriteNames = Object.keys(favorites);
+            favoritesContainer.innerHTML = `
+                <button id="favorites-btn" class="bg-yellow-400 hover:bg-yellow-500 text-gray-800 font-bold py-2 px-4 rounded-lg">My Favs</button>
+                <div id="favorites-dropdown" class="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-20 hidden">
+                    ${favoriteNames.map(name => `<a href="#" class="block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 favorite-list-item" data-name="${name}">${name}</a>`).join('')}
+                </div>
+            `;
+        }
+
+        function saveCurrentSelectionAsFavorite() {
+            if (selectedStops.length === 0) {
+                alert('Please select at least one stop to save as a favorite.');
+                return;
+            }
+            const favName = prompt('Enter a name for this favorite list:');
+            if (favName) {
+                const favorites = getCookie('favoriteStops') || {};
+                favorites[favName] = selectedStops.map(s => ({ code: s.code, name: s.name }));
+                setCookie('favoriteStops', favorites, 365);
+                alert(`Favorite "${favName}" saved!`);
+                renderFavoritesDropdown();
+            }
+        }
+
+        function loadFavorite(name) {
+            const favorites = getCookie('favoriteStops');
+            if (favorites && favorites[name]) {
+                selectedStops = favorites[name];
+                renderSelectedStopTags();
+                fetchAndRenderDepartures();
+            }
         }
 
         function renderSuggestions(stops) {
@@ -453,7 +569,11 @@
             suggestionsContainer.innerHTML = '';
             if (groupedStops.length > 0) {
                 // Add a close button to the suggestions container
-                suggestionsContainer.innerHTML = `<div class="flex justify-end p-1"><button id="close-suggestions-btn" class="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 font-bold text-xl">&times;</button></div>`;
+                suggestionsContainer.innerHTML = `
+                    <div class="flex justify-between items-center p-2 border-b dark:border-gray-700">
+                        <p class="text-xs text-gray-500 dark:text-gray-400">Click a stop to add or remove it.</p>
+                        <button id="close-suggestions-btn" class="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 font-bold text-xl">&times;</button>
+                    </div>`;
 
                 groupedStops.forEach(item => {
                     const isSelected = (stopCode) => selectedStops.some(s => s.code === stopCode);
@@ -462,17 +582,15 @@
 
                     if (item.is_parent) {
                         const groupEl = document.createElement('div');
-                        const distanceHTML = item.children[0].distance ? `<div class="text-sm text-gray-500 dark:text-gray-400 pr-2">${formatDistance(item.children[0].distance)}</div>` : '';
                         groupEl.className = 'border-b dark:border-gray-700';
-                        groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center">${distanceHTML}<div class="text-blue-500 font-bold text-lg expand-icon">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                        groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.children[0].latitude}" data-lon="${item.children[0].longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.children[0].latitude}, ${item.children[0].longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
                         suggestionsContainer.appendChild(groupEl);
                     } else {
                         const itemEl = document.createElement('div');
-                        const distanceHTML = item.distance ? `<div class="text-sm text-gray-500 dark:text-gray-400">${formatDistance(item.distance)}</div>` : '';
                         itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.stop_code)}`;
                         itemEl.dataset.id = item.id;
                         itemEl.dataset.code = item.stop_code;
-                        itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.stop_code)}">✓ Selected</div>${distanceHTML}</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
+                        itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.stop_code)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
                         suggestionsContainer.appendChild(itemEl);
                     }
                 });
@@ -632,6 +750,18 @@
             }
         });
 
+        document.getElementById('favorites-container').addEventListener('click', (e) => {
+            const dropdown = document.getElementById('favorites-dropdown');
+            if (e.target.id === 'favorites-btn') {
+                dropdown?.classList.toggle('hidden');
+            } else if (e.target.classList.contains('favorite-list-item')) {
+                e.preventDefault();
+                const favName = e.target.dataset.name;
+                loadFavorite(favName);
+                dropdown?.classList.add('hidden');
+            }
+        });
+
         document.addEventListener('click', (e) => {
             if (!e.target.closest('section')) {
                 suggestionsContainer.classList.add('hidden');
@@ -639,6 +769,10 @@
         });
         
         departuresContainer.addEventListener('click', async (e) => {
+            if (e.target.closest('.walking-directions-btn')) {
+                const btn = e.target.closest('.walking-directions-btn');
+                getWalkingDirections(parseFloat(btn.dataset.lat), parseFloat(btn.dataset.lon));
+            }
             if (e.target.matches('.more-details-btn')) {
                 const button = e.target;
                 const detailsContainer = button.closest('.flex-col').querySelector('.trip-details-container');
@@ -665,7 +799,12 @@
             }
         });
 
+        selectedStopsContainer.addEventListener('click', (e) => {
+            if (e.target.id === 'save-favorite-btn') saveCurrentSelectionAsFavorite();
+        });
+
         initializeMapWithUserLocation();
+        renderFavoritesDropdown();
         updateCurrentTime();
         fetchAndRenderDepartures();
         setInterval(updateCurrentTime, 1000);
