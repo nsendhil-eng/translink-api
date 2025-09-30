@@ -5,8 +5,10 @@ const state = {
     get BASE_URL() { return this.isLocal ? this.LOCAL_URL : this.VERCEL_URL; },
     get API_ENDPOINT() { return `${this.BASE_URL}/api/departures`; },
     get findNearMeEndpoint() { return `${this.BASE_URL}/api/stops-near-me`; },
-    get searchStopsEndpoint() { return `${this.BASE_URL}/api/search-stops`; },
+    get searchEndpoint() { return `${this.BASE_URL}/api/search`; },
     get tripDetailsEndpoint() { return `${this.BASE_URL}/api/trip-details`; },
+    get stopsForRouteEndpoint() { return `${this.BASE_URL}/api/stops-for-route`; },
+    get routeShapeEndpoint() { return `${this.BASE_URL}/api/route-shape`; },
     GRAPHHOPPER_API_KEY: 'c83491d0-8e78-4539-9920-2690e1a91b57',
     
     // DOM Elements
@@ -34,6 +36,9 @@ const state = {
     map: null,
     stopMarkers: [],
     walkingRouteLayer: null,
+    routeShapeLayer: null,
+    routeStartMarker: null,
+    routeEndMarker: null,
 };
 
 const VEHICLE_ICONS = {
@@ -143,28 +148,42 @@ async function getWalkingDirections(stopLat, stopLon) {
     }
 }
 
-function plotStopsOnMap(stops) {
+function plotStopsOnMap(stops, options = {}) {
+    const { highlightedStopCode = null, useDots = false } = options;
     state.stopMarkers.forEach(marker => marker.remove());
     state.stopMarkers = [];
 
     if (!state.map || stops.length === 0) return;
 
     const bounds = L.latLngBounds();
-    if (state.cachedPosition) {
+    if (state.cachedPosition && !useDots) { // Only include user location for non-route plots
         bounds.extend([state.cachedPosition.coords.latitude, state.cachedPosition.coords.longitude]);
     }
 
     stops.forEach(stop => {
-        const vehicleType = getStopVehicleType(stop);
-        const iconSVG = VEHICLE_ICONS[vehicleType] || VEHICLE_ICONS.Bus;
         const isSelected = state.selectedStops.some(s => s.code === stop.stop_code);
+        const isHighlighted = stop.stop_code === highlightedStopCode;
+        const isDeemphasized = highlightedStopCode && !isHighlighted;
 
-        const customIcon = L.divIcon({
-            html: `<div class="p-1 bg-white rounded-full shadow-md ${isSelected ? 'marker-selected' : ''}">${iconSVG}</div>`,
-            className: 'custom-map-marker',
-            iconSize: [36, 36],
-            iconAnchor: [18, 18]
-        });
+        let customIcon;
+        if (useDots) {
+            const dotColor = isHighlighted ? 'bg-white' : 'bg-gray-500';
+            customIcon = L.divIcon({
+                html: `<div class="w-2 h-2 ${dotColor} rounded-full ring-1 ring-gray-900/50 ${isDeemphasized ? 'opacity-40' : ''}"></div>`,
+                className: 'custom-map-marker',
+                iconSize: [8, 8],
+                iconAnchor: [4, 4]
+            });
+        } else {
+            const vehicleType = getStopVehicleType(stop);
+            const iconSVG = VEHICLE_ICONS[vehicleType] || VEHICLE_ICONS.Bus;
+            customIcon = L.divIcon({
+                html: `<div class="p-1 bg-white rounded-full shadow-md ${isSelected ? 'marker-selected' : ''}">${iconSVG}</div>`,
+                className: 'custom-map-marker',
+                iconSize: [36, 36],
+                iconAnchor: [18, 18]
+            });
+        }
 
         const popupContent = `
             <div class="font-semibold text-base flex items-center gap-2">${stop.name}
@@ -174,12 +193,23 @@ function plotStopsOnMap(stops) {
             </div>`;
 
         const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(state.map).bindPopup(popupContent);
+        
+        // Add a click listener to the marker itself to allow selection
+        marker.on('click', () => {
+            // Simulate clicking a suggestion item to add/remove the stop
+            handleStopSelection(stop);
+        });
+
         marker.stopCode = stop.stop_code;
         state.stopMarkers.push(marker);
         bounds.extend([stop.latitude, stop.longitude]);
     });
 
-    state.map.fitBounds(bounds, { padding: [50, 50] });
+    if (!useDots) {
+        // Only auto-fit bounds for general searches, not for route displays
+        // as that is handled separately.
+        state.map.fitBounds(bounds, { padding: [50, 50] });
+    }
 }
 
 function initializeMapWithUserLocation() {
@@ -418,11 +448,11 @@ function loadFavorite(name) {
     }
 }
 
-function renderSuggestions(stops) {
-    stops.forEach(stop => {
+function renderSuggestions(results) {
+    results.stops.forEach(stop => {
         if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
     });
-    const groupedStops = groupStops(stops);
+    const groupedStops = groupStops(results.stops);
     state.suggestionsContainer.innerHTML = '';
     if (groupedStops.length > 0) {
         state.suggestionsContainer.innerHTML = `
@@ -430,6 +460,11 @@ function renderSuggestions(stops) {
                 <p class="text-xs text-gray-500 dark:text-gray-400">Click a stop to add or remove it.</p>
                 <button id="close-suggestions-btn" class="text-gray-500 hover:text-gray-800 dark:hover:text-gray-200 font-bold text-xl">&times;</button>
             </div>`;
+        
+        const stopsHeader = document.createElement('div');
+        stopsHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
+        stopsHeader.textContent = 'Stops';
+        state.suggestionsContainer.appendChild(stopsHeader);
 
         groupedStops.forEach(item => {
             const isSelected = (stopCode) => state.selectedStops.some(s => s.code === stopCode);
@@ -450,6 +485,27 @@ function renderSuggestions(stops) {
                 state.suggestionsContainer.appendChild(itemEl);
             }
         });
+    }
+
+    if (results.routes && results.routes.length > 0) {
+        const routesHeader = document.createElement('div');
+        routesHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
+        routesHeader.textContent = 'Routes';
+        state.suggestionsContainer.appendChild(routesHeader);
+
+        results.routes.forEach(route => {
+            const itemEl = document.createElement('div');
+            itemEl.className = 'p-3 cursor-pointer suggestion-item route-suggestion border-b dark:border-gray-700';
+            itemEl.dataset.routeId = route.route_id;
+            itemEl.dataset.headsign = route.trip_headsign;
+            itemEl.dataset.shapeId = route.shape_id;
+            itemEl.dataset.routeColor = route.route_color || '3b82f6'; // Default to blue
+            itemEl.innerHTML = `<div class="font-semibold">${route.route_short_name} ${route.trip_headsign}</div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${route.route_long_name}</div>`;
+            state.suggestionsContainer.appendChild(itemEl);
+        });
+    }
+
+    if (groupedStops.length > 0 || (results.routes && results.routes.length > 0)) {
         state.suggestionsContainer.classList.remove('hidden');
     } else {
         state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
@@ -473,7 +529,7 @@ async function performNearbySearch() {
             return;
         }
         const nearbyStops = await response.json();
-        renderSuggestions(nearbyStops);
+        renderSuggestions({ stops: nearbyStops, routes: [] });
         plotStopsOnMap(nearbyStops);
         const searchFurtherBtn = document.createElement('div');
         searchFurtherBtn.id = 'search-further-btn';
@@ -490,22 +546,67 @@ async function performNearbySearch() {
     }
 }
 
+function findNearestStop(stops) {
+    if (!state.cachedPosition || stops.length === 0) return null;
+
+    const userLat = state.cachedPosition.coords.latitude;
+    const userLon = state.cachedPosition.coords.longitude;
+
+    // Simple distance calculation (Haversine formula is more accurate but this is fine for sorting)
+    const distance = (lat1, lon1, lat2, lon2) => Math.sqrt(Math.pow(lat2 - lat1, 2) + Math.pow(lon2 - lon1, 2));
+
+    let nearestStop = null;
+    let minDistance = Infinity;
+
+    stops.forEach(stop => {
+        const d = distance(userLat, userLon, stop.latitude, stop.longitude); // stop.latitude might be undefined
+        if (d < minDistance) {
+            minDistance = d;
+            nearestStop = stop;
+        }
+    });
+
+    return nearestStop;
+}
+
+function handleStopSelection(stop) {
+    if (!stop) return;
+    const isSelected = state.selectedStops.some(s => s.code === stop.stop_code);
+
+    if (!isSelected) {
+        state.selectedStops.push({ code: stop.stop_code, name: stop.name });
+    } else {
+        state.selectedStops = state.selectedStops.filter(s => s.code !== stop.stop_code);
+    }
+
+    renderSelectedStopTags();
+    fetchAndRenderDepartures();
+
+    // Update visual state in suggestions list and on map
+    const suggestionItem = state.suggestionsContainer.querySelector(`.suggestion-item[data-code="${stop.stop_code}"]`);
+    if (suggestionItem) suggestionItem.classList.toggle('suggestion-selected');
+    if (suggestionItem) suggestionItem.querySelector('.selection-status')?.classList.toggle('hidden');
+    const marker = state.stopMarkers.find(m => m.stopCode === stop.stop_code);
+    if (marker) marker.getElement()?.querySelector('.p-1').classList.toggle('marker-selected');
+}
+
 function addEventListeners() {
     state.searchInput.addEventListener('input', () => {
         clearTimeout(state.searchDebounceTimer);
         const query = state.searchInput.value.trim();
         if (query.length < 3) { state.suggestionsContainer.classList.add('hidden'); return; }
         state.searchDebounceTimer = setTimeout(() => {
-            fetch(`${state.searchStopsEndpoint}?q=${encodeURIComponent(query)}`)
+            fetch(`${state.searchEndpoint}?q=${encodeURIComponent(query)}`)
                 .then(response => response.json())
-                .then(stops => renderSuggestions(stops));
+                .then(results => renderSuggestions(results));
         }, 300);
     });
 
-    state.suggestionsContainer.addEventListener('click', (e) => {
+    state.suggestionsContainer.addEventListener('click', async (e) => {
         const suggestionItem = e.target.closest('.suggestion-item');
         const parentToggle = e.target.closest('.parent-toggle');
         const closeBtn = e.target.closest('#close-suggestions-btn');
+        const routeSuggestion = e.target.closest('.route-suggestion');
 
         if (e.target.id === 'search-further-btn') {
             state.currentRadius += 500;
@@ -516,24 +617,63 @@ function addEventListeners() {
             state.suggestionsContainer.classList.add('hidden');
             return;
         }
-        if (suggestionItem) {
+        if (routeSuggestion) {
+            const { routeId, headsign, shapeId, routeColor } = routeSuggestion.dataset;
+            try {
+                // Fetch stops and shape in parallel
+                const [stopsResponse, shapeResponse] = await Promise.all([
+                    fetch(`${state.stopsForRouteEndpoint}?route_id=${routeId}&headsign=${encodeURIComponent(headsign)}`),
+                    fetch(`${state.routeShapeEndpoint}?shape_id=${shapeId}`)
+                ]);
+
+                const stopsForRoute = await stopsResponse.json();
+                const routeShape = await shapeResponse.json();
+
+                if (state.routeShapeLayer) state.routeShapeLayer.remove();
+                if (state.routeStartMarker) state.routeStartMarker.remove();
+                if (state.routeEndMarker) state.routeEndMarker.remove();
+
+                if (routeShape && routeShape.coordinates && routeShape.coordinates.length > 1) {
+                    const startCoords = routeShape.coordinates[0];
+                    const endCoords = routeShape.coordinates[routeShape.coordinates.length - 1];
+
+                    const startIcon = L.divIcon({ html: '🟢', className: 'route-endpoint-marker', iconSize: [20, 20], iconAnchor: [10, 10] });
+                    const endIcon = L.divIcon({ html: '🔴', className: 'route-endpoint-marker', iconSize: [20, 20], iconAnchor: [10, 10] });
+
+                    // Leaflet uses [lat, lon], GeoJSON uses [lon, lat]
+                    state.routeStartMarker = L.marker([startCoords[1], startCoords[0]], { icon: startIcon, zIndexOffset: 1000 }).addTo(state.map).bindPopup('Route Start');
+                    state.routeEndMarker = L.marker([endCoords[1], endCoords[0]], { icon: endIcon, zIndexOffset: 1000 }).addTo(state.map).bindPopup('Route End');
+                }
+
+                stopsForRoute.forEach(stop => {
+                    if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
+                });
+
+                if (routeShape) {
+                    state.routeShapeLayer = L.geoJSON(routeShape, { style: { color: `#${routeColor}`, weight: 4, opacity: 0.7 } }).addTo(state.map);
+                }
+                
+                // Don't add to selected stops, just find the nearest and plot
+                const nearestStop = findNearestStop(stopsForRoute);
+                
+                state.searchInput.value = '';
+                state.suggestionsContainer.classList.add('hidden');
+                plotStopsOnMap(stopsForRoute, { highlightedStopCode: nearestStop ? nearestStop.stop_code : null, useDots: true });
+                
+                if (nearestStop) {
+                    state.map.setView([nearestStop.latitude, nearestStop.longitude], 16);
+                } else if (state.routeShapeLayer) {
+                    // If no nearest stop but we have a shape, fit the map to the shape
+                    state.map.fitBounds(state.routeShapeLayer.getBounds());
+                }
+            } catch (error) {
+                console.error('Error fetching stops for route:', error);
+                alert('Could not load stops for the selected route.');
+            }
+        } else if (suggestionItem) {
             const stopId = suggestionItem.dataset.id;
             const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
-            const isSelected = state.selectedStops.some(s => s.code === stop.stop_code);
-
-            if (stop && !isSelected) {
-                state.selectedStops.push({ code: stop.stop_code, name: stop.name });
-            } else if (stop && isSelected) {
-                state.selectedStops = state.selectedStops.filter(s => s.code !== stop.stop_code);
-            }
-
-            renderSelectedStopTags();
-            fetchAndRenderDepartures();
-            suggestionItem.classList.toggle('suggestion-selected');
-            suggestionItem.querySelector('.selection-status').classList.toggle('hidden');
-
-            const marker = state.stopMarkers.find(m => m.stopCode === stop.stop_code);
-            if (marker) marker.getElement().querySelector('.p-1').classList.toggle('marker-selected');
+            handleStopSelection(stop);
         }
         if (parentToggle) {
             const childContainer = parentToggle.nextElementSibling;

@@ -28,27 +28,106 @@ protobuf.load(path.join(__dirname, 'gtfs-realtime.proto')).then((root) => {
 }).catch(err => console.error('❌ Failed to load GTFS-realtime schema:', err));
 
 
-// --- SEARCH ENDPOINTS ---
-app.get('/api/search-stops', async (req, res) => {
-  const { q } = req.query;
-  if (!q || q.length < 3) { return res.json([]); }
-  try {
-    const searchQuery = `%${q}%`;
-    // FIX: Simplified query to only select columns that exist in the stable schema
-    const { rows } = await pool.query(`
-      SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
-             parent_stop.stop_name AS parent_station_name,
-             ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
-      FROM stops AS s
-      LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
-      WHERE s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
-      LIMIT 20;
-    `, [searchQuery]);
-    res.json(rows);
-  } catch (error) {
-    console.error('Text search query failed:', error);
-    res.status(500).json({ error: 'Failed to search for stops.' });
-  }
+// --- UNIFIED SEARCH ENDPOINT ---
+app.get('/api/search', async (req, res) => {
+    const { q } = req.query;
+    if (!q || q.length < 3) { return res.json({ stops: [], routes: [] }); }
+
+    try {
+        const searchQuery = `%${q}%`;
+
+        // Search for stops
+        const stopsPromise = pool.query(`
+            SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+                   parent_stop.stop_name AS parent_station_name,
+                   ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+            FROM stops AS s
+            LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
+            WHERE s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
+            LIMIT 10;
+        `, [searchQuery]);
+
+        // Search for routes with distinct headsigns
+        const routesPromise = pool.query(`
+            SELECT
+                r.route_id,
+                r.route_short_name,
+                r.route_long_name,
+                r.route_color,
+                t.trip_headsign,
+                t.shape_id
+            FROM routes r
+            JOIN (
+                SELECT DISTINCT ON (route_id, trip_headsign) route_id, trip_headsign, shape_id
+                FROM trips
+            ) t ON r.route_id = t.route_id
+            WHERE r.route_short_name ILIKE $1 OR r.route_long_name ILIKE $1
+            ORDER BY r.route_short_name, t.trip_headsign
+            LIMIT 10;
+        `, [searchQuery]);
+        
+        // Search for routes by suburb
+        const suburbRoutesPromise = pool.query(`
+            SELECT
+                r.route_id, r.route_short_name, r.route_long_name, r.route_color,
+                t.trip_headsign, t.shape_id
+            FROM routes r
+            JOIN (SELECT DISTINCT ON (route_id, trip_headsign) route_id, trip_headsign, shape_id FROM trips) t
+                ON r.route_id = t.route_id
+            WHERE r.route_id IN (
+                SELECT DISTINCT route_id FROM suburb_routes WHERE suburb ILIKE $1
+            )
+            LIMIT 10;
+        `, [searchQuery]);
+
+        const [stopsResult, routesResult, suburbRoutesResult] = await Promise.all([stopsPromise, routesPromise, suburbRoutesPromise]);
+
+        // Merge and de-duplicate route results
+        const allRoutes = [...routesResult.rows, ...suburbRoutesResult.rows];
+        const uniqueRoutes = Array.from(new Map(allRoutes.map(route => [`${route.route_id}-${route.trip_headsign}`, route])).values());
+
+        res.json({ stops: stopsResult.rows, routes: uniqueRoutes });
+
+    } catch (error) {
+        console.error('Unified search query failed:', error);
+        res.status(500).json({ error: 'Failed to perform search.' });
+    }
+});
+
+app.get('/api/stops-for-route', async (req, res) => {
+    const { route_id, headsign } = req.query;
+    if (!route_id || !headsign) { return res.status(400).json({ error: 'route_id and headsign are required.' }); }
+    try {
+        const { rows } = await pool.query(`
+            SELECT DISTINCT s.stop_id as id, s.stop_name as name, s.stop_code, s.servicing_routes, s.route_directions,
+                   ST_Y(s.location::geometry) AS latitude,
+                   ST_X(s.location::geometry) AS longitude
+            FROM stops s
+            JOIN stop_times st ON s.stop_id = st.stop_id
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE t.route_id = $1 AND t.trip_headsign = $2;
+        `, [route_id, headsign]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Stops for route query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch stops for the route.' });
+    }
+});
+
+app.get('/api/route-shape', async (req, res) => {
+    const { shape_id } = req.query;
+    if (!shape_id) { return res.status(400).json({ error: 'shape_id is required.' }); }
+    try {
+        const { rows } = await pool.query(`
+            SELECT ST_AsGeoJSON(shape) as shape_geojson
+            FROM route_shapes
+            WHERE shape_id = $1;
+        `, [shape_id]);
+        res.json(rows[0] ? JSON.parse(rows[0].shape_geojson) : null);
+    } catch (error) {
+        console.error('Route shape query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch route shape.' });
+    }
 });
 
 app.get('/api/stops-near-me', async (req, res) => {
