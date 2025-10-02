@@ -484,7 +484,7 @@ function renderFavoritesDropdown() {
     const favoriteNames = Object.keys(favorites);
     state.favoritesContainer.innerHTML = `
         <button id="favorites-btn" class="text-2xl hover:text-yellow-400 transition-colors" title="My Favorites">❤️</button>
-        <div id="favorites-dropdown" class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-20 hidden">
+        <div id="favorites-dropdown" class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000] hidden">
             <div class="p-2 font-bold text-sm border-b dark:border-gray-700">My Favorites</div>
             ${favoriteNames.map(name => `
                 <div class="flex justify-between items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
