@@ -130,6 +130,55 @@ app.get('/api/route-shape', async (req, res) => {
     }
 });
 
+app.get('/api/stops-for-route-at-station', async (req, res) => {
+    const { route_id, headsign, parent_station } = req.query;
+    if (!route_id || !headsign || !parent_station) {
+        return res.status(400).json({ error: 'route_id, headsign, and parent_station are required.' });
+    }
+    try {
+        // Find all child stops of the parent station that are serviced by the specific route and headsign.
+        const { rows } = await pool.query(`
+            SELECT s.stop_id as id, s.stop_name as name, s.stop_code, s.parent_station,
+                   ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+            FROM stops s
+            WHERE s.parent_station = $1
+              AND s.stop_id IN (
+                SELECT DISTINCT st.stop_id
+                FROM stop_times st
+                JOIN trips t ON st.trip_id = t.trip_id
+                WHERE t.route_id = $2 AND t.trip_headsign = $3
+              );
+        `, [parent_station, route_id, headsign]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Stops for route at station query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch stops for the route at the specified station.' });
+    }
+});
+
+app.get('/api/routes-for-stops', async (req, res) => {
+    const { stop_codes } = req.query;
+    if (!stop_codes) {
+        return res.status(400).json({ error: 'stop_codes are required.' });
+    }
+    try {
+        const stopCodesArray = stop_codes.split(',');
+        const { rows } = await pool.query(`
+            SELECT DISTINCT r.route_short_name, r.route_type, r.route_color, r.route_text_color
+            FROM routes r
+            JOIN trips t ON r.route_id = t.route_id
+            JOIN stop_times st ON t.trip_id = st.trip_id
+            JOIN stops s ON st.stop_id = s.stop_id
+            WHERE s.stop_code = ANY($1::text[])
+            ORDER BY r.route_type, r.route_short_name;
+        `, [stopCodesArray]);
+        res.json(rows);
+    } catch (error) {
+        console.error('Routes for stops query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch routes for the specified stops.' });
+    }
+});
+
 app.get('/api/stops-near-me', async (req, res) => {
   const { lat, lon, radius, types } = req.query;
   if (!lat || !lon) { return res.status(400).json({ error: 'Latitude and longitude are required.' }); }
