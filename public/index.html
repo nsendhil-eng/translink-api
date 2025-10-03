@@ -2,7 +2,7 @@
 <html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Brisbane Transit</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -26,20 +26,18 @@
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }
     </style>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 md:flex md:flex-col md:h-screen">
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col h-screen">
 
     <div class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
         <header class="text-center mb-4">
-            <h1 class="text-4xl font-bold text-gray-900 dark:text-white">My Transit</h1>
+            <h1 class="text-4xl font-bold text-gray-900 dark:text-white">Brisbane Transit</h1>
             <p id="currentTime" class="text-lg text-gray-600 dark:text-gray-400 mt-2"></p>
         </header>
         
         <section class="mb-4">
             <div class="flex flex-col sm:flex-row gap-2 items-center">
                 <div class="relative flex-grow w-full">
-                    <input type="text" id="stop-search-input" placeholder="Search for a stop or route..."
-                           class="w-full p-4 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                    <div id="autocomplete-suggestions" class="absolute z-[2000] w-full mt-1 bg-white dark:bg-gray-800 border rounded-lg shadow-lg hidden"></div>
+                    <input type="text" id="stop-search-input" placeholder="Search for a stop or route..." class="w-full p-4 bg-white dark:bg-gray-800 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
                 <div class="flex gap-2 w-full sm:w-auto">
                     <button id="find-near-me-btn" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg transition duration-300 flex items-center justify-center gap-2">
@@ -54,7 +52,8 @@
         </section>
     </div>
 
-    <div class="w-full max-w-7xl mx-auto px-4 pb-4 md:flex-grow md:overflow-hidden md:min-h-0">
+    <!-- Main content area that grows to fill space -->
+    <div class="flex-grow w-full max-w-7xl mx-auto px-4 pb-4 min-h-0">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 h-full">
             <div id="map-column" class="relative h-full min-h-[300px] md:min-h-0 rounded-lg shadow-lg overflow-hidden">
                 <div id="map" class="w-full h-full"></div>
@@ -69,6 +68,9 @@
             </div>
         </div>
     </div>
+
+    <!-- Suggestions container is now a direct child of body to avoid clipping -->
+    <div id="autocomplete-suggestions" class="z-[2000] bg-white dark:bg-gray-800 border rounded-lg shadow-lg hidden"></div>
 
     <script src="app.js" defer></script>
 </body>

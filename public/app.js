@@ -307,6 +307,10 @@ function createDepartureCardHTML(dep) {
 }
 
 function renderDepartures(departures) {
+    // Clear previous content, including any error messages or "no services" text.
+    // This fixes the bug where an error message would persist after a successful fetch.
+    state.departuresContainer.innerHTML = '';
+
     const container = state.departuresContainer;
     const existingCards = new Map();
     container.querySelectorAll('.departure-card').forEach(card => {
@@ -387,16 +391,29 @@ async function updateAndRenderRouteFilters() {
             }
         });
 
+        // Mobile-friendly dropdown filter
         const getIcon = (type) => {
             if (type === 3) return VEHICLE_ICONS.Bus;
             if (type === 4) return VEHICLE_ICONS.Ferry;
             return VEHICLE_ICONS.Train;
         };
 
+        const activeFilterCount = state.activeRouteFilters.size;
+
         state.routeFiltersContainer.innerHTML = `
-            <div class="flex flex-wrap gap-2 items-center">
-                <span class="text-sm font-semibold text-gray-600 dark:text-gray-400">Filter by route:</span>
-                ${routes.map(route => `<button class="route-filter-btn flex items-center gap-1.5 px-2.5 py-1 text-sm font-medium border rounded-full transition-colors ${state.activeRouteFilters.has(route.route_short_name) ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}" data-route-number="${route.route_short_name}">${getIcon(route.route_type)} ${route.route_short_name}</button>`).join('')}
+            <div class="flex flex-wrap gap-2 items-center relative">
+                <span class="text-sm font-semibold text-gray-600 dark:text-gray-400 hidden md:inline">Filter by route:</span>
+                
+                <!-- Desktop: Inline buttons -->
+                ${routes.map(route => `<button class="route-filter-btn hidden md:flex items-center gap-1.5 px-2.5 py-1 text-sm font-medium border rounded-full transition-colors ${state.activeRouteFilters.has(route.route_short_name) ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}" data-route-number="${route.route_short_name}">${getIcon(route.route_type)} ${route.route_short_name}</button>`).join('')}
+
+                <!-- Mobile: Dropdown button -->
+                <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
+                    Filter Routes ${activeFilterCount > 0 ? `<span class="bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
+                </button>
+                <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-20 hidden p-2 grid grid-cols-2 gap-1">
+                    ${routes.map(route => `<label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"><input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}> <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span></label>`).join('')}
+                </div>
             </div>`;
     } catch (error) {
         console.error('Failed to fetch routes for filters:', error);
@@ -520,6 +537,43 @@ function loadFavorite(name) {
     }
 }
 
+function positionSuggestions() {
+    const container = state.suggestionsContainer;
+    const inputRect = state.searchInput.getBoundingClientRect();
+
+    // Use fixed positioning relative to the viewport. This is more reliable,
+    // especially on mobile where the virtual keyboard can affect layout.
+    container.style.position = 'fixed';
+    container.style.left = `${inputRect.left}px`;
+    container.style.width = `${inputRect.width}px`;
+    container.style.overflowY = 'auto';
+
+    // Use the Visual Viewport API for better mobile keyboard handling.
+    // It gives the dimensions of the viewport as it is currently visible to the user.
+    const viewport = window.visualViewport || { height: window.innerHeight, offsetTop: 0 };
+    const viewportTop = viewport.offsetTop;
+    const viewportHeight = viewport.height;
+
+    const spaceBelow = viewportHeight - (inputRect.bottom - viewportTop);
+    const spaceAbove = inputRect.top - viewportTop;
+
+    // Prefer positioning below unless there's significantly more space above.
+    const positionBelow = spaceBelow >= 200 || spaceBelow > spaceAbove;
+
+    if (positionBelow) {
+        // Position below the input
+        container.style.top = `${inputRect.bottom}px`;
+        container.style.bottom = '';
+        // Use a margin of 10px from the bottom of the visual viewport.
+        container.style.maxHeight = `${spaceBelow - 10}px`;
+    } else {
+        // Position above the input
+        container.style.top = '';
+        container.style.bottom = `${viewportHeight - (inputRect.top - viewportTop)}px`;
+        // Use a margin of 10px from the top of the visual viewport.
+        container.style.maxHeight = `${spaceAbove - 10}px`;
+    }
+}
 function renderSuggestions(results) {
     results.stops.forEach(stop => {
         if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
@@ -586,6 +640,7 @@ function renderSuggestions(results) {
         state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
         state.suggestionsContainer.classList.remove('hidden');
     }
+    positionSuggestions();
 }
 
 async function performNearbySearch() {
@@ -665,6 +720,10 @@ function handleStopSelection(stop) {
     updateAndRenderRouteFilters();
     fetchAndRenderDepartures();
 
+    // Plot the newly selected/deselected stops on the map.
+    const stopObjects = state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.stop_code === s.code)).filter(Boolean);
+    plotStopsOnMap(stopObjects);
+
     // Update visual state in suggestions list and on map
     const suggestionItem = state.suggestionsContainer.querySelector(`.suggestion-item[data-code="${stop.stop_code}"]`);
     if (suggestionItem) suggestionItem.classList.toggle('suggestion-selected');
@@ -675,10 +734,19 @@ function handleStopSelection(stop) {
 
 function addEventListeners() {
     state.searchInput.addEventListener('input', () => {
+        // When a new search is initiated, clear any existing route display from the map.
+        // This resets the view to focus on the new search context.
+        if (state.routeShapeLayer) {
+            clearRouteDisplay();
+        }
+
         clearTimeout(state.searchDebounceTimer);
         const query = state.searchInput.value.trim();
         if (query.length < 3) { state.suggestionsContainer.classList.add('hidden'); return; }
-        state.searchDebounceTimer = setTimeout(() => {
+        state.searchDebounceTimer = setTimeout(async () => {
+            // Ensure location is available for sorting, if possible
+            if (!state.cachedPosition) await requestUserLocation(true);
+
             fetch(`${state.searchEndpoint}?q=${encodeURIComponent(query)}`)
                 .then(response => response.json())
                 .then(results => renderSuggestions(results));
@@ -712,6 +780,13 @@ function addEventListeners() {
         } else if (showRouteBtn) {
             // Second click: User confirms to show the route.
             if (!state.activeRouteSelection) return;
+
+            // Add loading feedback to the button
+            showRouteBtn.disabled = true;
+            showRouteBtn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg> Loading...`;
             const { routeId, headsign, shapeId, routeColor } = state.activeRouteSelection;
             try {
                 // Fetch stops and shape in parallel
@@ -792,16 +867,16 @@ function addEventListeners() {
                 alert('Could not load stops for the selected route.');
             }
         } else if (suggestionItem && !suggestionItem.classList.contains('route-suggestion') && !e.target.closest('.route-actions')) {
-            if (state.activeRouteSelection) {
-                const stopId = suggestionItem.dataset.id;
-                const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
-                const parentStationId = stop.parent_station || stop.id;
+            const stopId = suggestionItem.dataset.id;
+            const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
+            
+            if (state.activeRouteSelection && stop.parent_station) {
+                // This is a route context, and the user clicked a stop that is part of a larger station.
+                // We need to find all stops at that station for the selected route and add them.
                 const { routeId, headsign } = state.activeRouteSelection;
-
-                const url = `${state.stopsForRouteAtStationEndpoint}?route_id=${routeId}&headsign=${encodeURIComponent(headsign)}&parent_station=${parentStationId}`;
+                const url = `${state.stopsForRouteAtStationEndpoint}?route_id=${routeId}&headsign=${encodeURIComponent(headsign)}&parent_station=${stop.parent_station}`;
                 const response = await fetch(url);
                 const stopsToSelect = await response.json();
-
                 stopsToSelect.forEach(stopToAdd => handleStopSelection(stopToAdd));
                 
                 state.activeRouteSelection = null;
@@ -810,16 +885,18 @@ function addEventListeners() {
                 clearRouteDisplay();
                 plotStopsOnMap(state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.stop_code === s.code)).filter(Boolean));
                 return;
+            } else {
+                // This is a normal stop selection, or a route context with a standalone stop.
+                handleStopSelection(stop);
             }
-            const stopId = suggestionItem.dataset.id; // This line is now part of the normal stop selection
-            const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
-            handleStopSelection(stop);
         }
         if (parentToggle) {
             const childContainer = parentToggle.nextElementSibling;
             const icon = parentToggle.querySelector('.expand-icon');
             childContainer.classList.toggle('hidden');
             icon.textContent = childContainer.classList.contains('hidden') ? '+' : '−';
+            // Re-calculate position after expanding/collapsing to handle height changes.
+            positionSuggestions();
         }
     });
     
@@ -914,25 +991,48 @@ function addEventListeners() {
 
     state.routeFiltersContainer.addEventListener('click', (e) => {
         const filterBtn = e.target.closest('.route-filter-btn');
+        const mobileToggle = e.target.closest('#mobile-filter-toggle');
+        const checkbox = e.target.closest('.route-filter-checkbox');
+
+        if (mobileToggle) {
+            document.getElementById('mobile-filter-dropdown').classList.toggle('hidden');
+            return;
+        }
+
+        let routeNumber;
         if (filterBtn) {
-            const routeNumber = filterBtn.dataset.routeNumber;
-            if (state.activeRouteFilters.has(routeNumber)) {
-                state.activeRouteFilters.delete(routeNumber);
-            } else {
-                state.activeRouteFilters.add(routeNumber);
-            }
+            routeNumber = filterBtn.dataset.routeNumber;
+        } else if (checkbox) {
+            routeNumber = checkbox.dataset.routeNumber;
+        }
+
+        if (routeNumber) {
+             if (state.activeRouteFilters.has(routeNumber)) {
+                 state.activeRouteFilters.delete(routeNumber);
+             } else {
+                 state.activeRouteFilters.add(routeNumber);
+             }
+            // Re-render filters to update active states and then re-render departures
+            updateAndRenderRouteFilters();
             fetchAndRenderDepartures(); // Re-render with the new filter
-            filterBtn.classList.toggle('route-filter-active');
         }
     });
 
     document.addEventListener('click', (e) => {
-        if (!e.target.closest('section')) {
+        if (!e.target.closest('#stop-search-input') && !e.target.closest('#autocomplete-suggestions')) {
             state.suggestionsContainer.classList.add('hidden');
         }
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
             clearRouteDisplay();
+        }
+    });
+
+    // Add a listener to reposition the suggestions if the viewport changes
+    // (e.g., mobile keyboard appears/disappears).
+    window.visualViewport?.addEventListener('resize', () => {
+        if (!state.suggestionsContainer.classList.contains('hidden')) {
+            positionSuggestions();
         }
     });
     
@@ -977,13 +1077,16 @@ function clearAllStops() {
     fetchAndRenderDepartures();
 }
 
-function requestUserLocation() {
+function requestUserLocation(isSilent = false) {
+    return new Promise((resolve, reject) => {
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(position => {
             state.cachedPosition = { coords: { latitude: position.coords.latitude, longitude: position.coords.longitude } };
             state.positionCacheTimestamp = Date.now();
-        }, () => { /* User denied or error, do nothing */ }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+            resolve(position);
+        }, (error) => { if (!isSilent) { /* User denied or error, do nothing */ } reject(error); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
     }
+    });
 }
 
 function init() {
@@ -994,7 +1097,7 @@ function init() {
     addEventListeners();
     initializeMapWithUserLocation();
     renderFavoritesDropdown();
-    requestUserLocation(); // Proactively get user location
+    requestUserLocation(true); // Proactively get user location silently
     updateCurrentTime();
     fetchAndRenderDepartures();
     setInterval(updateCurrentTime, 1000);
