@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Help - Brisbane Transit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200">
+
+    <div class="w-full max-w-4xl mx-auto p-4 sm:p-6 lg:p-8">
+        <header class="flex items-center gap-4 mb-8">
+            <button onclick="history.back()" title="Go Back" class="flex-shrink-0 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold p-2 rounded-full transition duration-300">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+            </button>
+            <h1 class="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-white text-center flex-grow">App Features & Guide</h1>
+        </header>
+
+        <main class="space-y-8">
+            <section class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                <h2 class="text-2xl font-bold mb-4">Searching for Stops & Routes</h2>
+                <p class="mb-2">The main search bar is your starting point. You can search for:</p>
+                <ul class="list-disc list-inside space-y-1 text-gray-600 dark:text-gray-300">
+                    <li><strong>Stops:</strong> Type a stop name (e.g., "King George Square") or stop code.</li>
+                    <li><strong>Routes:</strong> Type a route number (e.g., "444" or "P331").</li>
+                    <li><strong>Suburbs:</strong> Type a suburb name to see routes that service that area.</li>
+                </ul>
+                <p class="mt-3">As you type, a list of suggestions will appear. Click on an item to interact with it.</p>
+            </section>
+
+            <section class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                <h2 class="text-2xl font-bold mb-4">Selecting & Managing Stops</h2>
+                <ul class="list-disc list-inside space-y-2 text-gray-600 dark:text-gray-300">
+                    <li><strong>Add/Remove:</strong> Click a stop from the search results to add it to your selection. Clicking it again will remove it. Selected stops appear as tags above the map.</li>
+                    <li><strong>Parent Stations:</strong> Some stops (like busway or train stations) are grouped. Click the `+` icon to expand and see all the individual platforms.</li>
+                    <li><strong>Clear All:</strong> Use the "Clear All" button that appears next to the tags to remove all selected stops at once.</li>
+                </ul>
+            </section>
+
+            <section class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                <h2 class="text-2xl font-bold mb-4">Using the Interactive Map</h2>
+                <ul class="list-disc list-inside space-y-2 text-gray-600 dark:text-gray-300">
+                    <li><strong>Stop Markers:</strong> Selected stops are automatically plotted on the map. Click a marker to see its name and get walking directions.</li>
+                    <li><strong>Route Plotting:</strong> When you search for a route, click "Show Route on Map" to see its full path, including start (🟢) and end (🔴) points. All stops for that route will also be shown as dots.</li>
+                    <li><strong>Filtered Routes:</strong> When you filter by one or more routes in the departures list, their paths will be drawn on the map for easy comparison.</li>
+                    <li>
+                        <strong>Walking Directions:</strong> Click the <svg width="20px" height="20px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" class="inline-block -mt-1" stroke="currentColor" stroke-width="1.5"><circle cx="13" cy="5" r="1"/><path d="M15 20L14 17L11 14M11 14L12 9M11 14L8 20M12 9L15 12L17 13M12 9L9 11L8 14"/></svg> icon next to any stop name (in the search results or on a map popup) to see a walking route from your current location.
+                    </li>
+                </ul>
+            </section>
+
+            <section class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                <h2 class="text-2xl font-bold mb-4">Viewing & Filtering Departures</h2>
+                <ul class="list-disc list-inside space-y-2 text-gray-600 dark:text-gray-300">
+                    <li><strong>Live Times:</strong> The departure list on the right shows live upcoming services for your selected stops. It automatically refreshes every 10 seconds.</li>
+                    <li><strong>Route Filters:</strong> Once stops are selected, a list of servicing routes appears above the departures. Click on one or more route numbers to filter the list and see only the services you're interested in.</li>
+                    <li>
+                        <strong>Mobile Filters:</strong> On mobile, tap the "Filter Routes" button to open a multi-select dropdown, saving screen space while providing the same functionality.
+                    </li>
+                    <li><strong>More Details:</strong> Click the "More ↓" button on any departure card to see a list of its upcoming stops.</li>
+                </ul>
+            </section>
+
+            <section class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
+                <h2 class="text-2xl font-bold mb-4">Favorites & "Near Me"</h2>
+                <ul class="list-disc list-inside space-y-2 text-gray-600 dark:text-gray-300">
+                    <li>
+                        <strong>Save Favorites:</strong> After selecting a group of stops you use often (e.g., your morning commute), click the '⭐' icon that appears. Give your selection a name to save it.
+                    </li>
+                    <li>
+                        <strong>Load Favorites:</strong> Click the '❤️' icon in the top right to see your list of saved favorites. Clicking an item will instantly load that set of stops.
+                    </li>
+                    <li>
+                        <strong>Find Near Me:</strong> Click the "Near Me" button to use your device's location to find all transit stops within a 500m radius.
+                    </li>
+                </ul>
+            </section>
+
+        </main>
+
+        <footer class="text-center mt-8">
+            <button onclick="history.back()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition duration-300 inline-flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                <span>Go Back to App</span>
+            </button>
+        </footer>
+    </div>
+
+</body>
+</html>
