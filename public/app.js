@@ -45,6 +45,7 @@ const state = {
     routeEndMarker: null,
     activeRouteSelection: null,
     activeRouteFilters: new Set(),
+    departuresObserver: null,
 };
 
 const VEHICLE_ICONS = {
@@ -411,7 +412,7 @@ async function updateAndRenderRouteFilters() {
                 <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
                     Filter Routes ${activeFilterCount > 0 ? `<span class="bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
                 </button>
-                <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-20 hidden p-2 grid grid-cols-2 gap-1">
+                <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-30 hidden p-2 grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-[50vh] overflow-y-auto">
                     ${routes.map(route => `<label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"><input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}> <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span></label>`).join('')}
                 </div>
             </div>`;
@@ -428,25 +429,34 @@ function updateCurrentTime() {
 
 function groupStops(stops) {
     const grouped = new Map();
-    const result = [];
-    const processedParents = new Set();
+    const stopMap = new Map(stops.map(s => [s.id, s]));
+
+    // First, create all parent groups
     stops.forEach(stop => {
         if (stop.parent_station) {
             if (!grouped.has(stop.parent_station)) {
-                const parent = { is_parent: true, id: stop.parent_station, name: stop.parent_station_name || 'Station', children: [] };
-                grouped.set(stop.parent_station, parent);
+                // Find the actual parent stop object from the results
+                const parentStop = stopMap.get(stop.parent_station);
+                if (parentStop) {
+                    // Use the parent stop object as the base for the group
+                    const parentGroup = { ...parentStop, is_parent: true, children: [] };
+                    grouped.set(stop.parent_station, parentGroup);
+                }
             }
+        }
+    });
+
+    // Then, populate children and identify standalone stops
+    const standaloneStops = stops.filter(stop => {
+        if (stop.parent_station && grouped.has(stop.parent_station)) {
             grouped.get(stop.parent_station).children.push(stop);
+            return false; // This is a child, not standalone
         }
+        // This is standalone if it's not a parent of a group that has been created
+        return !grouped.has(stop.id);
     });
-    stops.forEach(stop => {
-        if (stop.parent_station) {
-            if (!processedParents.has(stop.parent_station)) { result.push(grouped.get(stop.parent_station)); processedParents.add(stop.parent_station); }
-        } else {
-            if (!grouped.has(stop.id)) { result.push(stop); }
-        }
-    });
-    return result;
+
+    return [...standaloneStops, ...Array.from(grouped.values())];
 }
 
 function formatServicingRoutes(routesText, directionsJson) {
@@ -467,7 +477,7 @@ function formatServicingRoutes(routesText, directionsJson) {
 
 function renderSelectedStopTags() {
     state.selectedStopsContainer.innerHTML = '';
-    if (state.selectedStops.length > 0) {
+    if (state.selectedStops.length > 0) { // Only show these if there are stops
         const saveFavBtn = document.createElement('button');
         saveFavBtn.id = 'save-favorite-btn';
         saveFavBtn.className = 'text-2xl hover:text-yellow-400 transition-colors';
@@ -483,10 +493,10 @@ function renderSelectedStopTags() {
         clearAllBtn.innerHTML = '<span>Clear All</span><span class="font-bold">×</span>';
         state.selectedStopsContainer.appendChild(clearAllBtn);
     }
-    state.selectedStops.forEach(stop => {
+    state.selectedStops.forEach(stop => { // stop is now {id, code, name}
         const tag = document.createElement('div');
         tag.className = 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm font-semibold px-3 py-1 rounded-full flex items-center gap-2';
-        tag.innerHTML = `<span>${stop.name}</span><button data-code="${stop.code}" class="remove-tag-btn font-bold">×</button>`;
+        tag.innerHTML = `<span>${stop.name}</span><button data-id="${stop.id}" class="remove-tag-btn font-bold">×</button>`;
         state.selectedStopsContainer.appendChild(tag);
     });
 }
@@ -518,7 +528,7 @@ function saveCurrentSelectionAsFavorite() {
         alert('Please select at least one stop to save as a favorite.');
         return;
     }
-    const favName = prompt('Enter a name for this favorite list:');
+    const favName = prompt('Enter a name for this favorite selection:');
     if (favName) {
         const favorites = getCookie('favoriteStops') || {};
         favorites[favName] = state.selectedStops.map(s => ({ code: s.code, name: s.name }));
@@ -531,7 +541,7 @@ function saveCurrentSelectionAsFavorite() {
 function loadFavorite(name) {
     const favorites = getCookie('favoriteStops');
     if (favorites && favorites[name]) {
-        state.selectedStops = favorites[name];
+        state.selectedStops = favorites[name]; // Favorites now store {id, code, name}
         renderSelectedStopTags();
         fetchAndRenderDepartures();
     }
@@ -593,21 +603,21 @@ function renderSuggestions(results) {
         state.suggestionsContainer.appendChild(stopsHeader);
 
         groupedStops.forEach(item => {
-            const isSelected = (stopCode) => state.selectedStops.some(s => s.code === stopCode);
-            const selectedClass = (stopCode) => isSelected(stopCode) ? 'suggestion-selected' : '';
-            const selectedText = (stopCode) => isSelected(stopCode) ? '' : 'hidden';
+            const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId); // Use ID for checking.
+            const selectedClass = (stopId) => isSelected(stopId) ? 'suggestion-selected' : '';
+            const selectedText = (stopId) => isSelected(stopId) ? '' : 'hidden';
 
             if (item.is_parent) {
                 const groupEl = document.createElement('div');
                 groupEl.className = 'border-b dark:border-gray-700';
-                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.children[0].latitude}" data-lon="${item.children[0].longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.children[0].latitude}, ${item.children[0].longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
                 state.suggestionsContainer.appendChild(groupEl);
             } else {
                 const itemEl = document.createElement('div');
-                itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.stop_code)}`;
+                itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.id)}`;
                 itemEl.dataset.id = item.id;
                 itemEl.dataset.code = item.stop_code;
-                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.stop_code)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
+                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.id)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
                 state.suggestionsContainer.appendChild(itemEl);
             }
         });
@@ -641,6 +651,21 @@ function renderSuggestions(results) {
         state.suggestionsContainer.classList.remove('hidden');
     }
     positionSuggestions();
+}
+
+function updateSuggestionStates() {
+    const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId); // This is correct, uses ID.
+
+    document.querySelectorAll('.suggestion-item[data-id]').forEach(item => {
+        const id = item.dataset.id; // Use data-id for the lookup.
+        if (isSelected(id)) {
+            item.classList.add('suggestion-selected');
+            item.querySelector('.selection-status')?.classList.remove('hidden');
+        } else {
+            item.classList.remove('suggestion-selected');
+            item.querySelector('.selection-status')?.classList.add('hidden');
+        }
+    });
 }
 
 async function performNearbySearch() {
@@ -708,12 +733,12 @@ function findNearestStop(stops) {
 
 function handleStopSelection(stop) {
     if (!stop) return;
-    const isSelected = state.selectedStops.some(s => s.code === stop.stop_code);
+    const isSelected = state.selectedStops.some(s => s.id === stop.id);
 
     if (!isSelected) {
-        state.selectedStops.push({ code: stop.stop_code, name: stop.name });
+        state.selectedStops.push({ id: stop.id, code: stop.stop_code, name: stop.name });
     } else {
-        state.selectedStops = state.selectedStops.filter(s => s.code !== stop.stop_code);
+        state.selectedStops = state.selectedStops.filter(s => s.id !== stop.id);
     }
 
     renderSelectedStopTags();
@@ -721,15 +746,11 @@ function handleStopSelection(stop) {
     fetchAndRenderDepartures();
 
     // Plot the newly selected/deselected stops on the map.
-    const stopObjects = state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.stop_code === s.code)).filter(Boolean);
+    // Use the unique ID for lookup to prevent ambiguity with shared stop_codes.
+    const stopObjects = state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.id === s.id)).filter(Boolean);
     plotStopsOnMap(stopObjects);
 
-    // Update visual state in suggestions list and on map
-    const suggestionItem = state.suggestionsContainer.querySelector(`.suggestion-item[data-code="${stop.stop_code}"]`);
-    if (suggestionItem) suggestionItem.classList.toggle('suggestion-selected');
-    if (suggestionItem) suggestionItem.querySelector('.selection-status')?.classList.toggle('hidden');
-    const marker = state.stopMarkers.find(m => m.stopCode === stop.stop_code);
-    if (marker && marker.getElement()) marker.getElement().querySelector('.p-1').classList.toggle('marker-selected');
+    updateSuggestionStates();
 }
 
 function addEventListeners() {
@@ -902,19 +923,13 @@ function addEventListeners() {
     
     state.selectedStopsContainer.addEventListener('click', (e) => {
         if (e.target.matches('.remove-tag-btn')) {
-            const stopCodeToRemove = e.target.dataset.code;
-            state.selectedStops = state.selectedStops.filter(stop => stop.code !== stopCodeToRemove);
+            const stopIdToRemove = e.target.dataset.id;
+            state.selectedStops = state.selectedStops.filter(stop => stop.id !== stopIdToRemove);
             clearRouteDisplay();
             renderSelectedStopTags();
             updateAndRenderRouteFilters();
             fetchAndRenderDepartures();
-            const deselectedItem = state.suggestionsContainer.querySelector(`[data-code="${stopCodeToRemove}"]`);
-            if (deselectedItem) { 
-                deselectedItem.classList.remove('suggestion-selected');
-                deselectedItem.querySelector('.selection-status').classList.add('hidden');
-            }
-            const marker = state.stopMarkers.find(m => m.stopCode === stopCodeToRemove);
-            if (marker) marker.getElement().querySelector('.p-1').classList.remove('marker-selected');
+            updateSuggestionStates();
         }
         if (e.target.closest('#clear-all-btn')) clearAllStops();
         if (e.target.id === 'save-favorite-btn') saveCurrentSelectionAsFavorite();
@@ -994,11 +1009,16 @@ function addEventListeners() {
         const mobileToggle = e.target.closest('#mobile-filter-toggle');
         const checkbox = e.target.closest('.route-filter-checkbox');
 
+        // Handle mobile filter dropdown
         if (mobileToggle) {
-            document.getElementById('mobile-filter-dropdown').classList.toggle('hidden');
+            const dropdown = document.getElementById('mobile-filter-dropdown');
+            const isHidden = dropdown.classList.contains('hidden');
+            dropdown.classList.toggle('hidden');
+            // Prevent body scroll when the filter dropdown is open
+            document.body.classList.toggle('overflow-hidden', isHidden);
             return;
         }
-
+        
         let routeNumber;
         if (filterBtn) {
             routeNumber = filterBtn.dataset.routeNumber;
@@ -1021,6 +1041,14 @@ function addEventListeners() {
     document.addEventListener('click', (e) => {
         if (!e.target.closest('#stop-search-input') && !e.target.closest('#autocomplete-suggestions')) {
             state.suggestionsContainer.classList.add('hidden');
+        }
+        // Close mobile filter dropdown if clicking outside
+        const mobileFilterDropdown = document.getElementById('mobile-filter-dropdown');
+        if (mobileFilterDropdown && !mobileFilterDropdown.classList.contains('hidden')) {
+            if (!e.target.closest('#mobile-filter-toggle') && !e.target.closest('#mobile-filter-dropdown')) {
+                mobileFilterDropdown.classList.add('hidden');
+                document.body.classList.remove('overflow-hidden');
+            }
         }
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
@@ -1068,6 +1096,31 @@ function addEventListeners() {
     });
 }
 
+function setupDeparturesObserver() {
+    // Disconnect any existing observer
+    if (state.departuresObserver) {
+        state.departuresObserver.disconnect();
+    }
+
+    const sentinel = document.getElementById('scroll-sentinel'); // This is the observer target
+    if (!sentinel) return; // Exit if the sentinel element isn't in the DOM
+
+    const observerCallback = (entries) => {
+        entries.forEach(entry => {
+            // On mobile, when the sentinel is NOT intersecting the viewport (i.e., scrolled past it),
+            // add the 'departures-expanded' class to the body.
+            document.body.classList.toggle('departures-expanded', !entry.isIntersecting && window.innerWidth < 768);
+        });
+    };
+
+    state.departuresObserver = new IntersectionObserver(observerCallback, {
+        root: null, // Observe within the viewport
+        threshold: 0
+    });
+
+    state.departuresObserver.observe(sentinel);
+}
+
 function clearAllStops() {
     state.selectedStops = [];
     state.activeRouteFilters.clear();
@@ -1093,6 +1146,8 @@ function init() {
     // Set flex on the container for the order property to work
     state.departuresContainer.style.display = 'flex';
     state.departuresContainer.style.flexDirection = 'column';
+
+    setupDeparturesObserver();
 
     addEventListeners();
     initializeMapWithUserLocation();

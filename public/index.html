@@ -24,11 +24,31 @@
         }
         .filter-btn-active { background-color: #2563eb !important; color: white !important; }
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }
+        /* Styles for when departures are expanded on mobile */
+        @media (max-width: 767px) {
+            body.departures-expanded #map-column {
+                display: none;
+            }
+            body.departures-expanded #departures-column {
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                height: 100%;
+                z-index: 1000;
+                background: inherit;
+                padding: 1rem;
+            }
+            body.departures-expanded #top-header {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col h-screen">
 
-    <div class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
+    <div id="top-header" class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
         <header class="relative text-center mb-4">
             <h1 class="text-4xl font-bold text-gray-900 dark:text-white">Brisbane Transit</h1>
             <p id="currentTime" class="text-lg text-gray-600 dark:text-gray-400 mt-2"></p>
@@ -58,16 +78,19 @@
         </section>
     </div>
 
+    <div id="scroll-sentinel"></div> <!-- Observer target is now here -->
+
     <!-- Main content area that grows to fill space -->
     <div class="flex-grow w-full max-w-7xl mx-auto px-4 pb-4 min-h-0">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 h-full">
+        <div id="main-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4 h-full">
             <div id="map-column" class="relative h-full min-h-[300px] md:min-h-0 rounded-lg shadow-lg overflow-hidden">
                 <div id="map" class="w-full h-full"></div>
                 <div id="map-overlay-text" class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-sm font-bold p-2 rounded-md z-[1000] hidden flex items-center justify-between max-w-[calc(100%-1rem)]"></div>
             </div>
             <div id="departures-column" class="flex flex-col h-full overflow-hidden">
-                <div id="route-filters-container" class="flex-shrink-0 mb-2"></div>
-                <div class="flex-grow overflow-y-auto">
+                <!-- Filters are now outside the scrolling container -->
+                <div id="route-filters-container" class="flex-shrink-0 mb-2 py-2 z-10"></div>
+                <div class="flex-grow overflow-y-auto min-h-0">
                     <main id="departures-container" class="space-y-4"></main>
                 </div>
                 <p id="last-updated" class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center flex-shrink-0"></p>

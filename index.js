@@ -36,16 +36,29 @@ app.get('/api/search', async (req, res) => {
     try {
         const searchQuery = `%${q}%`;
 
-        // Search for stops
-        const stopsPromise = pool.query(`
+        // Step 1: Find initial matching stops and their parent stations.
+        const initialStopsResult = await pool.query(`
+            WITH initial_matches AS (
+                SELECT stop_id, parent_station
+                FROM stops
+                WHERE stop_name ILIKE $1 OR COALESCE(stop_desc, '') ILIKE $1
+                LIMIT 20
+            )
             SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
-                   parent_stop.stop_name AS parent_station_name,
-                   ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
-            FROM stops AS s
-            LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
-            WHERE s.stop_name ILIKE $1 OR COALESCE(s.stop_desc, '') ILIKE $1
-            LIMIT 10;
+                parent.stop_name AS parent_station_name,
+                ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+            FROM stops s
+            LEFT JOIN stops parent ON s.parent_station = parent.stop_id
+            WHERE s.stop_id IN (SELECT stop_id FROM initial_matches)
+               OR s.parent_station IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '')
+               OR s.stop_id IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '');
         `, [searchQuery]);
+
+        // De-duplicate stops, as the query might return the same stop multiple times
+        const uniqueStops = Array.from(new Map(initialStopsResult.rows.map(stop => [stop.id, stop])).values());
+
+        // The stopsPromise is now resolved.
+        const stopsPromise = Promise.resolve({ rows: uniqueStops });
 
         // Search for routes with distinct headsigns
         const routesPromise = pool.query(`
