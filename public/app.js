@@ -45,7 +45,6 @@ const state = {
     routeEndMarker: null,
     activeRouteSelection: null,
     activeRouteFilters: new Set(),
-    departuresObserver: null,
 };
 
 const VEHICLE_ICONS = {
@@ -1042,11 +1041,12 @@ function addEventListeners() {
         if (!e.target.closest('#stop-search-input') && !e.target.closest('#autocomplete-suggestions')) {
             state.suggestionsContainer.classList.add('hidden');
         }
-        // Close mobile filter dropdown if clicking outside
+        // Close mobile filter dropdown if clicking outside and restore body scroll
         const mobileFilterDropdown = document.getElementById('mobile-filter-dropdown');
         if (mobileFilterDropdown && !mobileFilterDropdown.classList.contains('hidden')) {
             if (!e.target.closest('#mobile-filter-toggle') && !e.target.closest('#mobile-filter-dropdown')) {
                 mobileFilterDropdown.classList.add('hidden');
+                // This is the crucial fix: ensure overflow is removed when closing the dropdown by clicking away.
                 document.body.classList.remove('overflow-hidden');
             }
         }
@@ -1096,31 +1096,6 @@ function addEventListeners() {
     });
 }
 
-function setupDeparturesObserver() {
-    // Disconnect any existing observer
-    if (state.departuresObserver) {
-        state.departuresObserver.disconnect();
-    }
-
-    const sentinel = document.getElementById('scroll-sentinel'); // This is the observer target
-    if (!sentinel) return; // Exit if the sentinel element isn't in the DOM
-
-    const observerCallback = (entries) => {
-        entries.forEach(entry => {
-            // On mobile, when the sentinel is NOT intersecting the viewport (i.e., scrolled past it),
-            // add the 'departures-expanded' class to the body.
-            document.body.classList.toggle('departures-expanded', !entry.isIntersecting && window.innerWidth < 768);
-        });
-    };
-
-    state.departuresObserver = new IntersectionObserver(observerCallback, {
-        root: null, // Observe within the viewport
-        threshold: 0
-    });
-
-    state.departuresObserver.observe(sentinel);
-}
-
 function clearAllStops() {
     state.selectedStops = [];
     state.activeRouteFilters.clear();
@@ -1146,8 +1121,6 @@ function init() {
     // Set flex on the container for the order property to work
     state.departuresContainer.style.display = 'flex';
     state.departuresContainer.style.flexDirection = 'column';
-
-    setupDeparturesObserver();
 
     addEventListeners();
     initializeMapWithUserLocation();

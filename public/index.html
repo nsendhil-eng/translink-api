@@ -2,7 +2,7 @@
 <html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Brisbane Transit</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -24,29 +24,9 @@
         }
         .filter-btn-active { background-color: #2563eb !important; color: white !important; }
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }
-        /* Styles for when departures are expanded on mobile */
-        @media (max-width: 767px) {
-            body.departures-expanded #map-column {
-                display: none;
-            }
-            body.departures-expanded #departures-column {
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                height: 100%;
-                z-index: 1000;
-                background: inherit;
-                padding: 1rem;
-            }
-            body.departures-expanded #top-header {
-                display: none;
-            }
-        }
     </style>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col h-screen">
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col md:h-screen overflow-x-hidden">
 
     <div id="top-header" class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
         <header class="relative text-center mb-4">
@@ -78,21 +58,16 @@
         </section>
     </div>
 
-    <div id="scroll-sentinel"></div> <!-- Observer target is now here -->
-
     <!-- Main content area that grows to fill space -->
-    <div class="flex-grow w-full max-w-7xl mx-auto px-4 pb-4 min-h-0">
-        <div id="main-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4 h-full">
-            <div id="map-column" class="relative h-full min-h-[300px] md:min-h-0 rounded-lg shadow-lg overflow-hidden">
+    <div class="flex-grow w-full max-w-7xl mx-auto px-4 pb-4 md:min-h-0">
+        <div id="main-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4 md:h-full w-full">
+            <div id="map-column" class="relative h-[40vh] md:h-full min-h-[300px] rounded-lg shadow-lg overflow-hidden">
                 <div id="map" class="w-full h-full"></div>
                 <div id="map-overlay-text" class="absolute top-2 left-2 bg-black bg-opacity-60 text-white text-sm font-bold p-2 rounded-md z-[1000] hidden flex items-center justify-between max-w-[calc(100%-1rem)]"></div>
             </div>
-            <div id="departures-column" class="flex flex-col h-full overflow-hidden">
-                <!-- Filters are now outside the scrolling container -->
+            <div id="departures-column" class="flex flex-col md:h-full md:overflow-hidden mt-4 md:mt-0">
                 <div id="route-filters-container" class="flex-shrink-0 mb-2 py-2 z-10"></div>
-                <div class="flex-grow overflow-y-auto min-h-0">
-                    <main id="departures-container" class="space-y-4"></main>
-                </div>
+                <main id="departures-container" class="space-y-4"></main>
                 <p id="last-updated" class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center flex-shrink-0"></p>
             </div>
         </div>
