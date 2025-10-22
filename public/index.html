@@ -24,6 +24,45 @@
         }
         .filter-btn-active { background-color: #2563eb !important; color: white !important; }
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }
+
+        /* Shared modal styles for mobile */
+        body.modal-active {
+            overflow: hidden;
+        }
+        .mobile-modal-wrapper {
+            position: fixed; inset: 0; z-index: 1999; background-color: rgba(0, 0, 0, 0.5); /* Backdrop */
+            display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh;
+        }
+
+        /* Search Suggestions Modal */
+        @media (max-width: 767px) {
+            body.suggestions-active {
+                overflow: hidden; /* Prevent body scroll when modal is open */
+            }
+            #suggestions-wrapper {
+                /* Uses .mobile-modal-wrapper */
+            }
+            #suggestions-wrapper #autocomplete-suggestions {
+                position: static;
+                width: 90%;
+                max-width: 500px;
+                max-height: 70vh;
+                overflow-y: auto;
+                display: block !important; /* Ensure it's visible */
+            }
+        }
+
+        /* Favorites Modal */
+        @media (max-width: 767px) {
+            #favorites-modal-wrapper #favorites-dropdown {
+                position: static;
+                width: 90%;
+                max-width: 500px;
+                max-height: 70vh;
+                overflow-y: auto;
+                display: block !important;
+            }
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col md:h-screen overflow-x-hidden">
@@ -45,6 +84,11 @@
                         <span>Near Me</span>
                     </button>
                     <div id="favorites-container" class="relative"></div>
+                    <a href="routes.html" title="Manage Favorite Routes" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-4 px-4 rounded-lg transition duration-300 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                        </svg>
+                    </a>
                     <a href="help.html" title="Help & Features" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-4 px-4 rounded-lg transition duration-300 flex items-center justify-center">
                         <svg class="w-6 h-6" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg">
                             <path d="M716.8 179.2a51.2 51.2 0 0 1 51.2 51.2v281.6h-51.2V230.4H256v563.2h281.6v51.2H256a51.2 51.2 0 0 1-51.2-51.2V230.4a51.2 51.2 0 0 1 51.2-51.2z" fill="currentColor"></path>
@@ -74,7 +118,13 @@
     </div>
 
     <!-- Suggestions container is now a direct child of body to avoid clipping -->
-    <div id="autocomplete-suggestions" class="z-[2000] bg-white dark:bg-gray-800 border rounded-lg shadow-lg hidden"></div>
+    <div id="suggestions-wrapper" class="mobile-modal-wrapper hidden">
+        <div id="autocomplete-suggestions" class="z-[2000] bg-white dark:bg-gray-800 border rounded-lg shadow-lg"></div>
+    </div>
+
+    <div id="favorites-modal-wrapper" class="mobile-modal-wrapper hidden">
+        <!-- The favorites dropdown will be injected here by JS -->
+    </div>
 
     <script src="app.js" defer></script>
 </body>

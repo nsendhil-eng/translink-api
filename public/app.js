@@ -45,6 +45,7 @@ const state = {
     routeEndMarker: null,
     activeRouteSelection: null,
     activeRouteFilters: new Set(),
+    favoriteRoutes: new Set(),
 };
 
 const VEHICLE_ICONS = {
@@ -74,6 +75,14 @@ function getCookie(name) {
         if (c.indexOf(nameEQ) == 0) return JSON.parse(c.substring(nameEQ.length,c.length));
     }
     return null;
+}
+
+function loadFavoriteRoutes() {
+    const favorites = getCookie('favoriteRoutes');
+    if (favorites && Array.isArray(favorites)) {
+        state.favoriteRoutes = new Set(favorites);
+        console.log('Favorite routes loaded:', state.favoriteRoutes);
+    }
 }
 
 function initMap(lat, lon) {
@@ -383,11 +392,15 @@ async function updateAndRenderRouteFilters() {
         const response = await fetch(`${state.routesForStopsEndpoint}?stop_codes=${stopCodes}`);
         const routes = await response.json();
 
-        // Prune active filters that are no longer relevant
+        // Get the set of all routes available at the selected stops.
         const relevantRouteNumbers = new Set(routes.map(r => r.route_short_name));
-        state.activeRouteFilters.forEach(filter => {
-            if (!relevantRouteNumbers.has(filter)) {
-                state.activeRouteFilters.delete(filter);
+
+        // Automatically apply favorite routes if they are available at this stop.
+        // This is the core of the new feature.
+        state.activeRouteFilters.clear(); // Start with a clean slate for filters.
+        state.favoriteRoutes.forEach(favRoute => {
+            if (relevantRouteNumbers.has(favRoute)) {
+                state.activeRouteFilters.add(favRoute);
             }
         });
 
@@ -409,7 +422,7 @@ async function updateAndRenderRouteFilters() {
 
                 <!-- Mobile: Dropdown button -->
                 <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
-                    Filter Routes ${activeFilterCount > 0 ? `<span class="bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
+                    Filter Routes ${activeFilterCount > 0 ? `<span class="filter-count-badge bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
                 </button>
                 <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-30 hidden p-2 grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-[50vh] overflow-y-auto">
                     ${routes.map(route => `<label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"><input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}> <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span></label>`).join('')}
@@ -507,19 +520,31 @@ function renderFavoritesDropdown() {
         return;
     }
 
+    // On desktop, the dropdown is inside the container. On mobile, it's in a modal.
     const favoriteNames = Object.keys(favorites);
-    state.favoritesContainer.innerHTML = `
-        <button id="favorites-btn" class="text-2xl hover:text-yellow-400 transition-colors" title="My Favorites">❤️</button>
-        <div id="favorites-dropdown" class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000] hidden">
-            <div class="p-2 font-bold text-sm border-b dark:border-gray-700">My Favorites</div>
-            ${favoriteNames.map(name => `
-                <div class="flex justify-between items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
-                    <a href="#" class="favorite-list-item flex-grow" data-name="${name}">${name}</a>
-                    <button class="delete-favorite-btn ml-2 text-red-500 hover:text-red-700 font-bold" data-name="${name}" title="Delete favorite">&times;</button>
-                </div>
-            `).join('')}
+    const dropdownHTML = `
+        <div id="favorites-dropdown" class="bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000] w-56">
+            <div class="p-2 font-bold text-sm border-b dark:border-gray-700 flex justify-between items-center">
+                <span>My Favorites</span>
+                <button id="close-favorites-btn" class="md:hidden text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">&times;</button>
+            </div>
+            ${favoriteNames.map(name => `...`).join('')}
+        </div>`;
+
+    // Always render the button in the header
+    if (!document.getElementById('favorites-btn')) {
+        state.favoritesContainer.innerHTML = `<button id="favorites-btn" class="text-2xl hover:text-yellow-400 transition-colors" title="My Favorites">❤️</button>`;
+    }
+
+    const dropdownContent = `
+        <div class="p-2 font-bold text-sm border-b dark:border-gray-700 flex justify-between items-center">
+            <span>My Favorites</span>
+            <button id="close-favorites-btn" class="md:hidden text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">&times;</button>
         </div>
-    `;
+        ${favoriteNames.map(name => `<div class="flex justify-between items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"><a href="#" class="favorite-list-item flex-grow" data-name="${name}">${name}</a><button class="delete-favorite-btn ml-2 text-red-500 hover:text-red-700 font-bold" data-name="${name}" title="Delete favorite">&times;</button></div>`).join('')}`;
+
+    const favoritesModalWrapper = document.getElementById('favorites-modal-wrapper');
+    favoritesModalWrapper.innerHTML = `<div id="favorites-dropdown" class="bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000]">${dropdownContent}</div>`;
 }
 
 function saveCurrentSelectionAsFavorite() {
@@ -542,47 +567,35 @@ function loadFavorite(name) {
     if (favorites && favorites[name]) {
         state.selectedStops = favorites[name]; // Favorites now store {id, code, name}
         renderSelectedStopTags();
+        updateAndRenderRouteFilters(); // This will fetch routes, build the filter UI, and pre-select favorites.
         fetchAndRenderDepartures();
     }
 }
 
 function positionSuggestions() {
-    const container = state.suggestionsContainer;
-    const inputRect = state.searchInput.getBoundingClientRect();
+    const wrapper = document.getElementById('suggestions-wrapper');
+    const container = state.suggestionsContainer; // This is the inner div now
 
-    // Use fixed positioning relative to the viewport. This is more reliable,
-    // especially on mobile where the virtual keyboard can affect layout.
-    container.style.position = 'fixed';
-    container.style.left = `${inputRect.left}px`;
-    container.style.width = `${inputRect.width}px`;
-    container.style.overflowY = 'auto';
-
-    // Use the Visual Viewport API for better mobile keyboard handling.
-    // It gives the dimensions of the viewport as it is currently visible to the user.
-    const viewport = window.visualViewport || { height: window.innerHeight, offsetTop: 0 };
-    const viewportTop = viewport.offsetTop;
-    const viewportHeight = viewport.height;
-
-    const spaceBelow = viewportHeight - (inputRect.bottom - viewportTop);
-    const spaceAbove = inputRect.top - viewportTop;
-
-    // Prefer positioning below unless there's significantly more space above.
-    const positionBelow = spaceBelow >= 200 || spaceBelow > spaceAbove;
-
-    if (positionBelow) {
-        // Position below the input
-        container.style.top = `${inputRect.bottom}px`;
-        container.style.bottom = '';
-        // Use a margin of 10px from the bottom of the visual viewport.
-        container.style.maxHeight = `${spaceBelow - 10}px`;
+    if (window.innerWidth < 768) {
+        // On mobile, we use the modal view controlled by the wrapper.
+        // The CSS handles all the positioning.
+        document.body.classList.add('suggestions-active');
+        wrapper.classList.remove('hidden');
+        container.style.position = 'static'; // Reset any fixed positioning
     } else {
-        // Position above the input
-        container.style.top = '';
-        container.style.bottom = `${viewportHeight - (inputRect.top - viewportTop)}px`;
-        // Use a margin of 10px from the top of the visual viewport.
-        container.style.maxHeight = `${spaceAbove - 10}px`;
+        // On desktop, position it directly below the search input.
+        const inputRect = state.searchInput.getBoundingClientRect();
+        wrapper.classList.add('hidden'); // The wrapper is not used on desktop
+        container.classList.remove('hidden'); // Show the container directly
+        container.style.position = 'fixed';
+        container.style.left = `${inputRect.left}px`;
+        container.style.top = `${inputRect.bottom + 5}px`; // Add a small gap
+        container.style.width = `${inputRect.width}px`;
+        container.style.maxHeight = '70vh';
+        container.style.overflowY = 'auto';
     }
 }
+
 function renderSuggestions(results) {
     results.stops.forEach(stop => {
         if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
@@ -644,11 +657,12 @@ function renderSuggestions(results) {
     }
 
     if (groupedStops.length > 0 || (results.routes && results.routes.length > 0)) {
-        state.suggestionsContainer.classList.remove('hidden');
+        // The positionSuggestions function will handle visibility
     } else {
         state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
-        state.suggestionsContainer.classList.remove('hidden');
     }
+
+    // This function now also controls visibility
     positionSuggestions();
 }
 
@@ -981,15 +995,33 @@ function addEventListeners() {
         }
     });
 
-    state.favoritesContainer.addEventListener('click', (e) => {
-        const dropdown = document.getElementById('favorites-dropdown');
+    document.body.addEventListener('click', (e) => {
+        const favoritesModalWrapper = document.getElementById('favorites-modal-wrapper');
+        const favoritesDropdown = document.getElementById('favorites-dropdown');
+
         if (e.target.id === 'favorites-btn') {
-            dropdown?.classList.toggle('hidden');
+            if (window.innerWidth < 768) {
+                favoritesModalWrapper.classList.remove('hidden');
+                document.body.classList.add('modal-active');
+            } else {
+                // Desktop: toggle dropdown next to button
+                const btnRect = e.target.getBoundingClientRect();
+                favoritesDropdown.style.position = 'absolute';
+                favoritesDropdown.style.top = `${btnRect.bottom + 5}px`;
+                favoritesDropdown.style.right = '0px';
+                favoritesDropdown.style.left = 'auto';
+                favoritesDropdown.style.width = '14rem'; // 56 * 4px = 224px
+                favoritesModalWrapper.classList.toggle('hidden');
+            }
+        } else if (e.target.closest('#close-favorites-btn')) {
+            favoritesModalWrapper.classList.add('hidden');
+            document.body.classList.remove('modal-active');
         } else if (e.target.classList.contains('favorite-list-item')) {
             e.preventDefault();
             const favName = e.target.dataset.name;
             loadFavorite(favName);
-            dropdown?.classList.add('hidden');
+            favoritesModalWrapper.classList.add('hidden');
+            document.body.classList.remove('modal-active');
         } else if (e.target.classList.contains('delete-favorite-btn')) {
             e.preventDefault();
             const favName = e.target.dataset.name;
@@ -997,9 +1029,11 @@ function addEventListeners() {
                 const favorites = getCookie('favoriteStops') || {};
                 delete favorites[favName];
                 setCookie('favoriteStops', favorites, 365);
-                alert(`Favorite "${favName}" deleted.`);
                 renderFavoritesDropdown();
             }
+        } else if (!e.target.closest('#favorites-btn') && !e.target.closest('#favorites-dropdown')) {
+            favoritesModalWrapper.classList.add('hidden');
+            document.body.classList.remove('modal-active');
         }
     });
 
@@ -1038,8 +1072,12 @@ function addEventListeners() {
     });
 
     document.addEventListener('click', (e) => {
-        if (!e.target.closest('#stop-search-input') && !e.target.closest('#autocomplete-suggestions')) {
+        const wrapper = document.getElementById('suggestions-wrapper');
+        // Close if clicking outside the search input and the suggestions container (or its wrapper)
+        if (!e.target.closest('#stop-search-input') && !e.target.closest('#suggestions-wrapper') && !e.target.closest('#autocomplete-suggestions')) {
             state.suggestionsContainer.classList.add('hidden');
+            wrapper.classList.add('hidden');
+            document.body.classList.remove('suggestions-active', 'modal-active');
         }
         // Close mobile filter dropdown if clicking outside and restore body scroll
         const mobileFilterDropdown = document.getElementById('mobile-filter-dropdown');
@@ -1060,7 +1098,9 @@ function addEventListeners() {
     // (e.g., mobile keyboard appears/disappears).
     window.visualViewport?.addEventListener('resize', () => {
         if (!state.suggestionsContainer.classList.contains('hidden')) {
-            positionSuggestions();
+            if (window.innerWidth >= 768) { // Only reposition on desktop
+                positionSuggestions();
+            }
         }
     });
     
@@ -1117,17 +1157,81 @@ function requestUserLocation(isSilent = false) {
     });
 }
 
+async function smartInitialLoad() {
+    loadFavoriteRoutes();
+
+    try {
+        // 1. Attempt to get user's location silently.
+        const position = await requestUserLocation(true);
+        const { latitude, longitude } = position.coords;
+        initMap(latitude, longitude); // Initialize map early with user's location.
+
+        // 2. Fetch all stops near the user's location.
+        const response = await fetch(`${state.findNearMeEndpoint}?lat=${latitude}&lon=${longitude}&radius=500`);
+        if (!response.ok) throw new Error('Failed to fetch nearby stops');
+        const nearbyStops = await response.json();
+
+        if (nearbyStops.length === 0) {
+            fetchAndRenderDepartures(); // Fetch default/empty departures
+            return;
+        }
+
+        // Cache all nearby stops data
+        nearbyStops.forEach(stop => {
+            if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) {
+                state.ALL_STOPS_DATA.push(stop);
+            }
+        });
+
+        let stopsToSelect = [];
+        let initialLoadMessage = "Showing departures from the closest stop.";
+
+        if (state.favoriteRoutes.size > 0) {
+            // 3a. Prioritize stops that service favorite routes.
+            const favoriteStops = nearbyStops.filter(stop => {
+                const servicing = stop.servicing_routes ? stop.servicing_routes.split(', ') : [];
+                return servicing.some(route => state.favoriteRoutes.has(route));
+            });
+
+            if (favoriteStops.length > 0) {
+                stopsToSelect = favoriteStops;
+                initialLoadMessage = "Showing departures from nearby stops for your favorite routes.";
+            }
+        }
+
+        if (stopsToSelect.length === 0) {
+            // 3b. Fallback: If no favorite routes match, select the single closest stop.
+            stopsToSelect.push(nearbyStops[0]); // nearbyStops is already sorted by distance.
+        }
+
+        // 4. Select the determined stops.
+        state.selectedStops = stopsToSelect.map(stop => ({ id: stop.id, code: stop.stop_code, name: stop.name }));
+
+        // 5. Update the UI.
+        renderSelectedStopTags();
+        await updateAndRenderRouteFilters(); // This will apply favorite routes to the filter UI.
+        
+        // 6. Fetch and render the departures, which will now be filtered.
+        await fetchAndRenderDepartures();
+        state.departuresContainer.insertAdjacentHTML('afterbegin', `<div class="text-sm text-center text-gray-500 dark:text-gray-400 mb-4 p-2 bg-gray-50 dark:bg-gray-800 rounded-lg">${initialLoadMessage}</div>`);
+        plotStopsOnMap(nearbyStops); // Plot all nearby stops on the map for context.
+
+    } catch (error) {
+        // If location fails or there's an error, fall back to default behavior.
+        console.log("Smart load failed, falling back to default. Error:", error.message);
+        initializeMapWithUserLocation(); // Default map init
+        fetchAndRenderDepartures(); // Fetch default/empty departures
+    }
+}
+
 function init() {
-    // Set flex on the container for the order property to work
     state.departuresContainer.style.display = 'flex';
     state.departuresContainer.style.flexDirection = 'column';
 
     addEventListeners();
-    initializeMapWithUserLocation();
     renderFavoritesDropdown();
-    requestUserLocation(true); // Proactively get user location silently
     updateCurrentTime();
-    fetchAndRenderDepartures();
+    smartInitialLoad(); // This is the new, enhanced loading function.
     setInterval(updateCurrentTime, 1000);
     setInterval(fetchAndRenderDepartures, 10000);
 }
