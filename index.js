@@ -235,7 +235,7 @@ app.get('/api/departures', async (req, res) => {
         const staticQuery = `
             SELECT
                 st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
-                t.trip_headsign, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
+                t.trip_headsign, t.direction_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
                 r.route_type,
                 CASE WHEN r.route_type = 3 THEN 'Bus' WHEN r.route_type = 4 THEN 'Ferry' ELSE 'Train' END AS vehicle_type
             FROM stop_times AS st
@@ -311,10 +311,12 @@ app.get('/api/departures', async (req, res) => {
 
             return {
                 trip_id: s.trip_id,
+                stop_id: s.stop_id,
                 stop_sequence: s.stop_sequence,
                 stopName: s.stop_name,
                 vehicleType: vehicleType,
                 routeNumber: s.route_short_name,
+                directionId: s.direction_id,
                 headsign: s.trip_headsign,
                 scheduledDepartureUtc: scheduledUtc.toISOString(),
                 expectedDepartureUtc: (expectedUtc !== scheduledUtc.toISOString()) ? expectedUtc : null,

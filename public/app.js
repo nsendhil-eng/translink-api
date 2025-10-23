@@ -26,6 +26,7 @@ const state = {
     mapContainer: document.getElementById('map'),
     mapOverlayText: document.getElementById('map-overlay-text'),
     routeFiltersContainer: document.getElementById('route-filters-container'),
+    directionFiltersContainer: document.getElementById('direction-filters-container'),
 
     // App State
     ALL_STOPS_DATA: [ { name: 'Auchenflower Station, platform 2', id: '600284', stop_code: '600284' }, { name: 'Auchenflower Station, platform 4', id: '600286', stop_code: '600286' }, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951', stop_code: '001951' }],
@@ -45,6 +46,7 @@ const state = {
     routeEndMarker: null,
     activeRouteSelection: null,
     activeRouteFilters: new Set(),
+    activeDirection: null, // Can be 'Inbound', 'Outbound', or null
     favoriteRoutes: new Set(),
 };
 
@@ -216,7 +218,7 @@ function plotStopsOnMap(stops, options = {}) {
             </div>`;
 
         const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(state.map).bindPopup(popupContent);
-        
+
         // Add a click listener to the marker itself to allow selection
         marker.on('click', () => {
             // Simulate clicking a suggestion item to add/remove the stop
@@ -224,6 +226,7 @@ function plotStopsOnMap(stops, options = {}) {
         });
 
         marker.stopCode = stop.stop_code;
+        marker.stopId = stop.id; // Store the unique stop_id on the marker
         state.stopMarkers.push(marker);
         bounds.extend([stop.latitude, stop.longitude]);
     });
@@ -271,6 +274,13 @@ function createDepartureCardHTML(dep) {
     if (state.activeRouteFilters.size > 0 && !state.activeRouteFilters.has(dep.routeNumber)) {
         return null;
     }
+    // NEW: Simplified Direction filter check
+    if (state.activeDirection) {
+        // direction_id: 0 is Outbound, 1 is Inbound
+        const direction = dep.directionId === 1 ? 'Inbound' : 'Outbound';
+        if (direction !== state.activeDirection)
+            return null;
+    }
 
     const urlParams = new URLSearchParams(window.location.search);
     const isDebug = urlParams.get('debug') === 'true';
@@ -286,10 +296,10 @@ function createDepartureCardHTML(dep) {
         const routeColor = dep.routeColor;
         const routeTextColor = dep.routeTextColor;
         const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
-        const fallbackClass = (!routeColor || !routeTextColor) ? 'bg-green-600' : '';
-        cardContentHTML = `<div class="flex items-center gap-3 w-full">
+        const fallbackClass = (!routeColor || !routeTextColor) ? 'bg-purple-700' : '';
+        cardContentHTML = `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 w-full">
             <div class="flex-shrink-0 text-white w-10 h-12 rounded-lg flex items-center justify-center text-2xl font-bold ${fallbackClass}" ${styles}>${VEHICLE_ICONS.Train}</div>
-            <div class="flex-grow min-w-0">
+            <div class="flex-grow min-w-0 basis-0">
                 <p class="text-base font-semibold text-gray-900 dark:text-white truncate">${trainLine}</p>
                 <h3 class="text-sm font-medium text-gray-600 dark:text-gray-400 truncate">${dep.headsign}</h3>
                 <p class="text-xs font-medium text-gray-500 dark:text-gray-400 truncate">${dep.stopName}</p>
@@ -303,8 +313,11 @@ function createDepartureCardHTML(dep) {
         const routeColor = dep.routeColor;
         const routeTextColor = dep.routeTextColor;
         const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
-        if (dep.vehicleType === 'Ferry') iconBgColor = dep.routeColor;
-        cardContentHTML = `<div class="flex items-center gap-3 w-full"><div class="flex-shrink-0 ${iconBgColor} text-white w-12 h-12 rounded-lg flex items-center justify-center text-base font-bold" ${styles}>${iconContent}</div><div class="flex-grow min-w-0"><p class="text-base font-semibold text-gray-900 dark:text-white truncate">${dep.headsign}</p><h3 class="text-sm font-medium text-gray-600 dark:text-gray-400 truncate">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="text-lg font-bold text-blue-600 dark:text-blue-400">${dueInText}</div><div class="text-xs font-semibold text-gray-700 dark:text-gray-300 mt-1">Sch: ${scheduledTime}</div>${expectedHTML}${debugHTML}</div></div>`;
+        if (dep.vehicleType === 'Ferry') iconBgColor = 'bg-cyan-500';
+        const iconStyles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
+        const iconFallbackClass = (!routeColor || !routeTextColor) ? (dep.vehicleType === 'Ferry' ? 'bg-cyan-500' : 'bg-blue-500') : '';
+
+        cardContentHTML = `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 w-full"><div class="flex-shrink-0 ${iconFallbackClass} text-white w-12 h-12 rounded-lg flex items-center justify-center text-base font-bold" ${iconStyles}>${iconContent}</div><div class="flex-grow min-w-0 basis-0"><p class="text-base font-semibold text-gray-900 dark:text-white truncate">${dep.headsign}</p><h3 class="text-sm font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="text-lg font-bold text-blue-600 dark:text-blue-400">${dueInText}</div><div class="text-xs font-semibold text-gray-700 dark:text-gray-300 mt-1">Sch: ${scheduledTime}</div>${expectedHTML}${debugHTML}</div></div>`;
     }
     return `
         ${cardContentHTML}
@@ -329,7 +342,7 @@ function renderDepartures(departures) {
     const incomingTripIds = new Set();
     let visibleDepartures = 0;
     departures.forEach((dep, index) => {
-        incomingTripIds.add(dep.trip_id);
+        if (dep) incomingTripIds.add(dep.trip_id);
         const cardHTML = createDepartureCardHTML(dep);
 
         if (!cardHTML) return; // Skip if filtered out
@@ -345,6 +358,7 @@ function renderDepartures(departures) {
             const card = document.createElement('div');
             card.className = 'bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg flex flex-col departure-card';
             card.dataset.tripId = dep.trip_id;
+            card.dataset.stopId = dep.stop_id;
             card.innerHTML = cardHTML;
             card.style.order = index;
             container.appendChild(card);
@@ -357,6 +371,36 @@ function renderDepartures(departures) {
     if (visibleDepartures === 0) {
         container.innerHTML = `<div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg text-center"><p class="text-lg font-medium">No upcoming services found for the selected stops and filters.</p></div>`;
     }
+}
+
+function renderDirectionFilters(allDepartures, relevantDepartures) {
+    const container = state.directionFiltersContainer;
+
+    if (relevantDepartures.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const hasInbound = relevantDepartures.some(dep => dep.directionId === 1);
+    const hasOutbound = relevantDepartures.some(dep => dep.directionId === 0);
+
+    if (!hasInbound || !hasOutbound) {
+        container.innerHTML = ''; // Don't show filter if there's only one direction
+        return;
+    }
+
+    const buttonClass = (dir) => `direction-filter-btn px-3 py-1.5 text-sm font-medium border rounded-full transition-colors ${state.activeDirection === dir ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}`;
+
+    container.innerHTML = `
+        <div class="flex flex-wrap gap-2 items-center">
+            <span class="text-sm font-semibold text-gray-600 dark:text-gray-400">Direction:</span>
+            <div class="flex items-center border rounded-full p-0.5 bg-gray-100 dark:bg-gray-900">
+                <button class="${buttonClass(null)}" data-direction="All">All</button>
+                <button class="${buttonClass('Inbound')}" data-direction="Inbound">Inbound ↑</button>
+                <button class="${buttonClass('Outbound')}" data-direction="Outbound">Outbound ↓</button>
+            </div>
+        </div>
+    `;
 }
 
 async function fetchAndRenderDepartures() {
@@ -372,6 +416,14 @@ async function fetchAndRenderDepartures() {
         
         state.lastUpdatedEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
         
+        // Determine which departures are relevant based on the *route* filter first.
+        const relevantDepartures = state.activeRouteFilters.size > 0
+            ? upcomingDepartures.filter(dep => state.activeRouteFilters.has(dep.routeNumber))
+            : upcomingDepartures;
+
+        // First, render the direction filters based on all possible departures
+        renderDirectionFilters(upcomingDepartures, relevantDepartures);
+        // Then, render the departure cards, which will internally apply the direction filter
         renderDepartures(upcomingDepartures);
 
     } catch (error) {
@@ -384,6 +436,8 @@ async function updateAndRenderRouteFilters() {
     if (state.selectedStops.length === 0) {
         state.routeFiltersContainer.innerHTML = '';
         state.activeRouteFilters.clear();
+        state.activeDirection = null;
+        state.directionFiltersContainer.innerHTML = ''; // Also clear direction filters
         return;
     }
 
@@ -756,6 +810,7 @@ function handleStopSelection(stop) {
 
     renderSelectedStopTags();
     updateAndRenderRouteFilters();
+    state.activeDirection = null; // Clear direction filters when stops change
     fetchAndRenderDepartures();
 
     // Plot the newly selected/deselected stops on the map.
@@ -1071,6 +1126,15 @@ function addEventListeners() {
         }
     });
 
+    state.directionFiltersContainer.addEventListener('click', (e) => {
+        const filterBtn = e.target.closest('.direction-filter-btn');
+        if (filterBtn) {
+            const direction = filterBtn.dataset.direction;
+            state.activeDirection = direction === 'All' ? null : direction;
+            fetchAndRenderDepartures(); // Re-render with the new filter
+        }
+    });
+
     document.addEventListener('click', (e) => {
         const wrapper = document.getElementById('suggestions-wrapper');
         // Close if clicking outside the search input and the suggestions container (or its wrapper)
@@ -1091,6 +1155,25 @@ function addEventListeners() {
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
             clearRouteDisplay();
+        }
+
+        // Handle clicking anywhere on the departure card to highlight the map marker
+        const card = e.target.closest('.departure-card');
+        if (card && !e.target.matches('.more-details-btn')) {
+            const stopId = card.dataset.stopId;
+            if (stopId) {
+                const markerToHighlight = state.stopMarkers.find(m => m.stopId === stopId);
+                if (markerToHighlight) {
+                    const iconElement = markerToHighlight.getElement();
+                    if (iconElement) {
+                        iconElement.classList.add('marker-highlight-red');
+                        state.map.panTo(markerToHighlight.getLatLng());
+                        setTimeout(() => {
+                            iconElement.classList.remove('marker-highlight-red');
+                        }, 2000); // Highlight for 2 seconds
+                    }
+                }
+            }
         }
     });
 
@@ -1139,6 +1222,7 @@ function addEventListeners() {
 function clearAllStops() {
     state.selectedStops = [];
     state.activeRouteFilters.clear();
+    state.activeDirection = null;
     clearRouteDisplay();
     renderSelectedStopTags();
     updateAndRenderRouteFilters();
