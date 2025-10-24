@@ -656,37 +656,63 @@ function renderSuggestions(results) {
     results.stops.forEach(stop => {
         if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
     });
-    const groupedStops = groupStops(results.stops);
+
+    const query = state.searchInput.value.trim();
+    const isNearbySearch = state.nearbyStopsList.length > 0 && results.stops.length === state.nearbyStopsList.length;
+    const modalTitle = isNearbySearch ? 'Nearby Stops' : `Results for "${query}"`;
+
     state.suggestionsContainer.innerHTML = '';
+
+    // --- Create Modal Header ---
+    const headerHTML = `
+        <div class="flex-shrink-0 p-3 border-b dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800 sticky top-0 z-10">
+            <h3 class="font-bold text-lg">${modalTitle}</h3>
+            <button id="close-suggestions-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 font-bold text-2xl leading-none">&times;</button>
+        </div>`;
+    state.suggestionsContainer.insertAdjacentHTML('beforeend', headerHTML);
+
+    const contentContainer = document.createElement('div');
+    contentContainer.className = 'flex-grow overflow-y-auto';
+    state.suggestionsContainer.appendChild(contentContainer);
+
+    const groupedStops = groupStops(results.stops);
+    const checkmarkIcon = `<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
+
     if (groupedStops.length > 0) {
-        state.suggestionsContainer.innerHTML = `
-            <div class="flex justify-between items-center p-2 border-b dark:border-gray-700">
-                <p class="text-xs text-gray-500 dark:text-gray-400">Click a stop to add or remove it.</p>
-                <button id="close-suggestions-btn" class="text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">close</button>
-            </div>`;
-        
         const stopsHeader = document.createElement('div');
         stopsHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
         stopsHeader.textContent = 'Stops';
-        state.suggestionsContainer.appendChild(stopsHeader);
+        contentContainer.appendChild(stopsHeader);
 
         groupedStops.forEach(item => {
-            const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId); // Use ID for checking.
+            const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId);
             const selectedClass = (stopId) => isSelected(stopId) ? 'suggestion-selected' : '';
-            const selectedText = (stopId) => isSelected(stopId) ? '' : 'hidden';
+            const selectedIcon = (stopId) => isSelected(stopId) ? checkmarkIcon : '';
 
             if (item.is_parent) {
                 const groupEl = document.createElement('div');
                 groupEl.className = 'border-b dark:border-gray-700';
-                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
-                state.suggestionsContainer.appendChild(groupEl);
+                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.id)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status">${selectedIcon(child.id)}</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                contentContainer.appendChild(groupEl);
             } else {
                 const itemEl = document.createElement('div');
                 itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.id)}`;
                 itemEl.dataset.id = item.id;
                 itemEl.dataset.code = item.stop_code;
-                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.id)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
-                state.suggestionsContainer.appendChild(itemEl);
+                itemEl.innerHTML = `<div class="flex justify-between items-center w-full">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                        <div class="min-w-0">
+                            <div class="font-semibold truncate">${item.name}</div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <div class="selection-status">${selectedIcon(item.id)}</div>
+                        <span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span>
+                    </div>
+                </div>`;
+                contentContainer.appendChild(itemEl);
             }
         });
     }
@@ -695,7 +721,7 @@ function renderSuggestions(results) {
         const routesHeader = document.createElement('div');
         routesHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
         routesHeader.textContent = 'Routes';
-        state.suggestionsContainer.appendChild(routesHeader);
+        contentContainer.appendChild(routesHeader);
 
         results.routes.forEach(route => {
             const itemEl = document.createElement('div');
@@ -708,14 +734,14 @@ function renderSuggestions(results) {
                 <div><div class="font-semibold">${route.route_short_name} ${route.trip_headsign}</div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${route.route_long_name}</div></div>
                 <div class="route-actions flex-shrink-0 ml-2"></div>
             </div>`;
-            state.suggestionsContainer.appendChild(itemEl);
+            contentContainer.appendChild(itemEl);
         });
     }
 
     if (groupedStops.length > 0 || (results.routes && results.routes.length > 0)) {
         // The positionSuggestions function will handle visibility
     } else {
-        state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
+        contentContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No results found.</div>`;
     }
 
     // This function now also controls visibility
@@ -729,10 +755,10 @@ function updateSuggestionStates() {
         const id = item.dataset.id; // Use data-id for the lookup.
         if (isSelected(id)) {
             item.classList.add('suggestion-selected');
-            item.querySelector('.selection-status')?.classList.remove('hidden');
+            item.querySelector('.selection-status').innerHTML = `<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
         } else {
             item.classList.remove('suggestion-selected');
-            item.querySelector('.selection-status')?.classList.add('hidden');
+            item.querySelector('.selection-status').innerHTML = '';
         }
     });
 }
@@ -941,7 +967,7 @@ function addEventListeners() {
 
                 // Instead of hiding, re-render suggestions to show only stops for this route
                 renderSuggestions({ stops: stopsForRoute, routes: [] });
-                state.suggestionsContainer.querySelector('.p-2.border-b').insertAdjacentHTML('afterend', `
+                state.suggestionsContainer.querySelector('.border-b').insertAdjacentHTML('afterend', `
                     <div class="p-2 bg-blue-100 dark:bg-blue-900 text-sm text-blue-800 dark:text-blue-200">
                         Showing stops for route <strong>${routeId} - ${headsign}</strong>. Select a station.
                     </div>
@@ -1283,6 +1309,7 @@ async function smartInitialLoad() {
         const response = await fetch(`${state.findNearMeEndpoint}?lat=${latitude}&lon=${longitude}&radius=500`);
         if (!response.ok) throw new Error('Failed to fetch nearby stops');
         const nearbyStops = await response.json();
+        state.nearbyStopsList = nearbyStops; // Store the fetched stops in the global state
 
         if (nearbyStops.length === 0) {
             fetchAndRenderDepartures(); // Fetch default/empty departures

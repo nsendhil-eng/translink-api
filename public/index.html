@@ -11,11 +11,6 @@
     <style>
         html, body { height: 100%; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
         .suggestion-item:hover { background-color: #bae6fd; }
-        .dark .suggestion-item:hover { background-color: #1e40af; }
-        .child-stop { border-left: 2px solid #3b82f6; }
-        .suggestion-selected { background-color: #dbeafe; }
-        .dark .suggestion-selected { background-color: #1e3a8a; }
-        .marker-selected { border: 2px solid #2563eb; box-shadow: 0 0 8px #2563eb; }
         .pulse { animation: pulse-animation 2s infinite; }
         @keyframes pulse-animation {
             0% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0.7); }
@@ -23,6 +18,13 @@
             100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
         }
         .filter-btn-active { background-color: #2563eb !important; color: white !important; }
+        .dark .suggestion-item:hover { background-color: #1e40af; }
+        .child-stop { border-left: 2px solid #3b82f6; }
+        .suggestion-selected { background-color: #2563eb !important; color: white !important; }
+        .suggestion-selected .text-gray-500, .suggestion-selected .dark\:text-gray-400 { color: #dbeafe !important; }
+        .suggestion-selected .walking-directions-btn svg { stroke: white !important; }
+        .marker-selected { border: 2px solid #2563eb; box-shadow: 0 0 8px #2563eb; }
+
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }
         .marker-highlight-red .p-1 {
             background-color: #ef4444; /* red-500 */
@@ -34,34 +36,47 @@
         body.modal-active {
             overflow: hidden;
         }
-        .mobile-modal-wrapper {
-            position: fixed; inset: 0; z-index: 1999; background-color: rgba(0, 0, 0, 0.5); /* Backdrop */
-            display: flex; align-items: flex-start; justify-content: center; padding-top: 10vh;
-        }
 
         /* Search Suggestions Modal */
         @media (max-width: 767px) {
             body.suggestions-active {
                 overflow: hidden; /* Prevent body scroll when modal is open */
             }
-            #suggestions-wrapper {
-                /* Uses .mobile-modal-wrapper */
+            .mobile-modal-wrapper {
+                position: fixed; inset: 0; z-index: 1999; background-color: rgba(0, 0, 0, 0.5); /* Backdrop */
+                display: flex; align-items: flex-end; justify-content: center;
+                transition: opacity 0.3s ease;
+            }
+            .mobile-modal-wrapper.hidden {
+                opacity: 0;
+                pointer-events: none;
+            }
+            .mobile-modal-wrapper #autocomplete-suggestions {
+                transform: translateY(100%);
+                transition: transform 0.3s ease-out;
+            }
+            body.suggestions-active .mobile-modal-wrapper #autocomplete-suggestions {
+                transform: translateY(0);
             }
             #suggestions-wrapper #autocomplete-suggestions {
                 position: static;
-                width: 90%;
+                width: 90vw;
                 max-width: 500px;
                 max-height: 70vh;
                 overflow-y: auto;
-                display: block !important; /* Ensure it's visible */
+                display: flex !important; /* Use flex for inner layout */
+                flex-direction: column;
+                border-bottom-left-radius: 0;
+                border-bottom-right-radius: 0;
             }
         }
 
         /* Favorites Modal */
         @media (max-width: 767px) {
+            /* This can be updated later if needed */
             #favorites-modal-wrapper #favorites-dropdown {
                 position: static;
-                width: 90%;
+                width: 90vw;
                 max-width: 500px;
                 max-height: 70vh;
                 overflow-y: auto;
@@ -126,7 +141,9 @@
 
     <!-- Suggestions container is now a direct child of body to avoid clipping -->
     <div id="suggestions-wrapper" class="mobile-modal-wrapper hidden">
-        <div id="autocomplete-suggestions" class="z-[2000] bg-white dark:bg-gray-800 border rounded-lg shadow-lg"></div>
+        <div id="autocomplete-suggestions" class="z-[2000] bg-white dark:bg-gray-800 border rounded-lg shadow-lg flex flex-col">
+            <!-- Content will be injected here -->
+        </div>
     </div>
 
     <div id="favorites-modal-wrapper" class="mobile-modal-wrapper hidden">
