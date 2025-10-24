@@ -27,6 +27,7 @@ const state = {
     mapOverlayText: document.getElementById('map-overlay-text'),
     routeFiltersContainer: document.getElementById('route-filters-container'),
     directionFiltersContainer: document.getElementById('direction-filters-container'),
+    nearbyStopsCtaContainer: document.getElementById('nearby-stops-cta-container'),
 
     // App State
     ALL_STOPS_DATA: [ { name: 'Auchenflower Station, platform 2', id: '600284', stop_code: '600284' }, { name: 'Auchenflower Station, platform 4', id: '600286', stop_code: '600286' }, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951', stop_code: '001951' }],
@@ -48,6 +49,7 @@ const state = {
     activeRouteFilters: new Set(),
     activeDirection: null, // Can be 'Inbound', 'Outbound', or null
     favoriteRoutes: new Set(),
+    nearbyStopsList: [], // To hold stops from a "near me" search
 };
 
 const VEHICLE_ICONS = {
@@ -751,7 +753,17 @@ async function performNearbySearch() {
             return;
         }
         const nearbyStops = await response.json();
-        renderSuggestions({ stops: nearbyStops, routes: [] });
+        state.nearbyStopsList = nearbyStops; // Store for later
+
+        // Instead of showing suggestions, show a CTA button
+        state.suggestionsContainer.classList.add('hidden');
+        document.body.classList.remove('suggestions-active');
+        state.nearbyStopsCtaContainer.innerHTML = `
+            <button id="show-nearby-list-btn" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2.5 px-4 rounded-lg transition duration-300 flex items-center justify-center gap-2">
+                List Nearby Stops (${nearbyStops.length})
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </button>
+        `;
 
         state.mapOverlayText.innerHTML = `<span>Showing stops near you</span>
             <button id="clear-map-overlay-btn" class="ml-2 flex-shrink-0 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm hover:bg-red-700" title="Clear map view">
@@ -760,12 +772,6 @@ async function performNearbySearch() {
         `;
         state.mapOverlayText.classList.remove('hidden');
         plotStopsOnMap(nearbyStops);
-        const searchFurtherBtn = document.createElement('div');
-        searchFurtherBtn.id = 'search-further-btn';
-        searchFurtherBtn.className = 'p-3 text-center text-blue-600 dark:text-blue-400 font-semibold cursor-pointer suggestion-item';
-        const nextRadiusKm = (state.currentRadius + 500) / 1000;
-        searchFurtherBtn.textContent = `Search further (${nextRadiusKm}km)`;
-        state.suggestionsContainer.appendChild(searchFurtherBtn);
     } catch (error) {
         console.error('Error fetching nearby stops:', error);
     } finally {
@@ -808,6 +814,7 @@ function handleStopSelection(stop) {
         state.selectedStops = state.selectedStops.filter(s => s.id !== stop.id);
     }
 
+    state.nearbyStopsCtaContainer.innerHTML = ''; // Clear the "List Nearby" button on selection
     renderSelectedStopTags();
     updateAndRenderRouteFilters();
     state.activeDirection = null; // Clear direction filters when stops change
@@ -826,6 +833,7 @@ function addEventListeners() {
         // When a new search is initiated, clear any existing route display from the map.
         // This resets the view to focus on the new search context.
         if (state.routeShapeLayer) {
+            state.nearbyStopsCtaContainer.innerHTML = '';
             clearRouteDisplay();
         }
 
@@ -855,7 +863,10 @@ function addEventListeners() {
             return;
         }
         if (closeBtn) {
+            const wrapper = document.getElementById('suggestions-wrapper');
             state.suggestionsContainer.classList.add('hidden');
+            wrapper.classList.add('hidden');
+            document.body.classList.remove('suggestions-active');
             return;
         }
         if (routeSuggestion && !e.target.closest('.route-actions')) {
@@ -993,6 +1004,7 @@ function addEventListeners() {
         if (e.target.matches('.remove-tag-btn')) {
             const stopIdToRemove = e.target.dataset.id;
             state.selectedStops = state.selectedStops.filter(stop => stop.id !== stopIdToRemove);
+            state.nearbyStopsCtaContainer.innerHTML = '';
             clearRouteDisplay();
             renderSelectedStopTags();
             updateAndRenderRouteFilters();
@@ -1007,6 +1019,7 @@ function addEventListeners() {
         if (!navigator.geolocation) { return alert('Geolocation is not supported by your browser.'); }
         
         if (state.cachedPosition && state.positionCacheTimestamp && (Date.now() - state.positionCacheTimestamp < state.CACHE_DURATION_MS)) {
+            state.nearbyStopsCtaContainer.innerHTML = '';
             state.lastSearchCoords = state.cachedPosition.coords;
             state.currentRadius = 500;
             state.activeTypes = [];
@@ -1016,6 +1029,7 @@ function addEventListeners() {
         }
 
         state.findNearMeBtn.querySelector('span').textContent = 'Acquiring GPS...';
+        state.nearbyStopsCtaContainer.innerHTML = '';
         state.findNearMeBtn.disabled = true;
         state.currentRadius = 500;
         state.activeTypes = [];
@@ -1155,6 +1169,20 @@ function addEventListeners() {
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
             clearRouteDisplay();
+            state.nearbyStopsCtaContainer.innerHTML = '';
+        }
+
+        // Handle clicking the new "List Nearby Stops" button
+        if (e.target.id === 'show-nearby-list-btn') {
+            renderSuggestions({ stops: state.nearbyStopsList, routes: [] });
+            
+            // Add the "Search Further" button to the bottom of the list
+            const searchFurtherBtn = document.createElement('div');
+            searchFurtherBtn.id = 'search-further-btn';
+            searchFurtherBtn.className = 'p-3 text-center text-blue-600 dark:text-blue-400 font-semibold cursor-pointer suggestion-item';
+            const nextRadiusKm = (state.currentRadius + 500) / 1000;
+            searchFurtherBtn.textContent = `Search further (${nextRadiusKm}km)`;
+            state.suggestionsContainer.appendChild(searchFurtherBtn);
         }
 
         // Handle clicking anywhere on the departure card to highlight the map marker
@@ -1222,6 +1250,7 @@ function addEventListeners() {
 function clearAllStops() {
     state.selectedStops = [];
     state.activeRouteFilters.clear();
+    state.nearbyStopsCtaContainer.innerHTML = '';
     state.activeDirection = null;
     clearRouteDisplay();
     renderSelectedStopTags();
@@ -1294,6 +1323,14 @@ async function smartInitialLoad() {
         // 5. Update the UI.
         renderSelectedStopTags();
         await updateAndRenderRouteFilters(); // This will apply favorite routes to the filter UI.
+
+        // Show the CTA to view the list of nearby stops
+        state.nearbyStopsCtaContainer.innerHTML = `
+            <button id="show-nearby-list-btn" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2.5 px-4 rounded-lg transition duration-300 flex items-center justify-center gap-2">
+                List Nearby Stops (${nearbyStops.length})
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+            </button>
+        `;
         
         // 6. Fetch and render the departures, which will now be filtered.
         await fetchAndRenderDepartures();
