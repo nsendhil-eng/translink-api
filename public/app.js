@@ -21,6 +21,9 @@ const state = {
     suggestionsContainer: document.getElementById('autocomplete-suggestions'),
     selectedStopsContainer: document.getElementById('selected-stops-container'),
     findNearMeBtn: document.getElementById('find-near-me-btn'),
+    selectedStopsAccordion: document.getElementById('selected-stops-accordion'),
+    selectedStopsHeader: document.getElementById('selected-stops-header'),
+    selectedStopsSummary: document.getElementById('selected-stops-summary'),
     searchOptionsContainer: document.getElementById('search-options'),
     favoritesContainer: document.getElementById('favorites-container'),
     mapContainer: document.getElementById('map'),
@@ -469,21 +472,36 @@ async function updateAndRenderRouteFilters() {
 
         const activeFilterCount = state.activeRouteFilters.size;
 
-        state.routeFiltersContainer.innerHTML = `
-            <div class="flex flex-wrap gap-2 items-center relative">
-                <span class="text-sm font-semibold text-gray-600 dark:text-gray-400 hidden md:inline">Filter by route:</span>
-                
-                <!-- Desktop: Inline buttons -->
-                ${routes.map(route => `<button class="route-filter-btn hidden md:flex items-center gap-1.5 px-2.5 py-1 text-sm font-medium border rounded-full transition-colors ${state.activeRouteFilters.has(route.route_short_name) ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}" data-route-number="${route.route_short_name}">${getIcon(route.route_type)} ${route.route_short_name}</button>`).join('')}
+        // --- Desktop View ---
+        const desktopHTML = `
+            <span class="text-sm font-semibold text-gray-600 dark:text-gray-400 hidden md:inline">Filter by route:</span>
+            ${routes.map(route => `<button class="route-filter-btn hidden md:flex items-center gap-1.5 px-2.5 py-1 text-sm font-medium border rounded-full transition-colors ${state.activeRouteFilters.has(route.route_short_name) ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}" data-route-number="${route.route_short_name}">${getIcon(route.route_type)} ${route.route_short_name}</button>`).join('')}`;
 
-                <!-- Mobile: Dropdown button -->
-                <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
-                    Filter Routes ${activeFilterCount > 0 ? `<span class="filter-count-badge bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
-                </button>
-                <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-30 hidden p-2 grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-[50vh] overflow-y-auto">
-                    ${routes.map(route => `<label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"><input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}> <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span></label>`).join('')}
-                </div>
+        // --- Mobile View ---
+        const mobileButtonHTML = `
+            <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
+                Filter Routes ${activeFilterCount > 0 ? `<span class="filter-count-badge bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
+            </button>`;
+
+        state.routeFiltersContainer.innerHTML = `<div class="flex flex-wrap gap-2 items-center relative">${desktopHTML}${mobileButtonHTML}</div>`;
+
+        // --- Populate Mobile Modal ---
+        const mobileModalContent = document.getElementById('route-filters-modal-content');
+        const mobileModalHTML = `
+            <div class="flex-shrink-0 p-3 border-b dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800 sticky top-0 z-10">
+                <h3 class="font-bold text-lg">Filter by Route</h3>
+                <button id="close-route-filter-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 font-bold text-2xl leading-none">&times;</button>
+            </div>
+            <div class="flex-grow overflow-y-auto p-2 grid grid-cols-2 sm:grid-cols-3 gap-1">
+                ${routes.map(route => `
+                    <label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
+                        <input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}>
+                        <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span>
+                    </label>
+                `).join('')}
             </div>`;
+        mobileModalContent.innerHTML = mobileModalHTML;
+
     } catch (error) {
         console.error('Failed to fetch routes for filters:', error);
         state.routeFiltersContainer.innerHTML = `<p class="text-xs text-red-500">Could not load route filters.</p>`;
@@ -491,8 +509,8 @@ async function updateAndRenderRouteFilters() {
 }
 
 function updateCurrentTime() {
-     const now = new Date();
-     state.currentTimeEl.textContent = now.toLocaleTimeString('en-AU', { weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Brisbane' });
+    const now = new Date();
+    state.currentTimeEl.textContent = now.toLocaleTimeString('en-AU', { weekday: 'long', hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Australia/Brisbane' });
 }
 
 function groupStops(stops) {
@@ -544,8 +562,20 @@ function formatServicingRoutes(routesText, directionsJson) {
 }
 
 function renderSelectedStopTags() {
+    const accordion = state.selectedStopsAccordion;
+    const summary = state.selectedStopsSummary;
+
+    if (state.selectedStops.length === 0) {
+        accordion.classList.add('hidden');
+        return;
+    }
+
+    accordion.classList.remove('hidden');
+    const stopCount = state.selectedStops.length;
+    summary.textContent = `${stopCount} Stop${stopCount > 1 ? 's' : ''} Selected`;
+
     state.selectedStopsContainer.innerHTML = '';
-    if (state.selectedStops.length > 0) { // Only show these if there are stops
+    if (state.selectedStops.length > 0) {
         const saveFavBtn = document.createElement('button');
         saveFavBtn.id = 'save-favorite-btn';
         saveFavBtn.className = 'text-2xl hover:text-yellow-400 transition-colors';
@@ -996,14 +1026,14 @@ function addEventListeners() {
             const stopId = suggestionItem.dataset.id;
             const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
             
-            if (state.activeRouteSelection && stop.parent_station) {
+            if (state.activeRouteSelection && stop.parent_station && e.target.closest('.parent-toggle')) {
                 // This is a route context, and the user clicked a stop that is part of a larger station.
                 // We need to find all stops at that station for the selected route and add them.
                 const { routeId, headsign } = state.activeRouteSelection;
                 const url = `${state.stopsForRouteAtStationEndpoint}?route_id=${routeId}&headsign=${encodeURIComponent(headsign)}&parent_station=${stop.parent_station}`;
                 const response = await fetch(url);
                 const stopsToSelect = await response.json();
-                stopsToSelect.forEach(stopToAdd => handleStopSelection(stopToAdd));
+                stopsToSelect.forEach(handleStopSelection);
                 
                 state.activeRouteSelection = null;
                 state.searchInput.value = '';
@@ -1011,7 +1041,8 @@ function addEventListeners() {
                 clearRouteDisplay();
                 plotStopsOnMap(state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.stop_code === s.code)).filter(Boolean));
                 return;
-            } else {
+            }
+            else {
                 // This is a normal stop selection, or a route context with a standalone stop.
                 handleStopSelection(stop);
             }
@@ -1039,6 +1070,14 @@ function addEventListeners() {
         }
         if (e.target.closest('#clear-all-btn')) clearAllStops();
         if (e.target.id === 'save-favorite-btn') saveCurrentSelectionAsFavorite();
+    });
+
+    state.selectedStopsHeader.addEventListener('click', () => {
+        const container = state.selectedStopsContainer;
+        const icon = document.getElementById('accordion-icon');
+        const isHidden = container.classList.contains('hidden');
+        container.classList.toggle('hidden');
+        icon.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
     });
 
     state.findNearMeBtn.addEventListener('click', () => {
@@ -1132,21 +1171,19 @@ function addEventListeners() {
         }
     });
 
-    state.routeFiltersContainer.addEventListener('click', (e) => {
+    document.body.addEventListener('click', (e) => {
         const filterBtn = e.target.closest('.route-filter-btn');
         const mobileToggle = e.target.closest('#mobile-filter-toggle');
         const checkbox = e.target.closest('.route-filter-checkbox');
+        const closeBtn = e.target.closest('#close-route-filter-btn');
+        const modalWrapper = document.getElementById('route-filter-modal-wrapper');
 
         // Handle mobile filter dropdown
         if (mobileToggle) {
-            const dropdown = document.getElementById('mobile-filter-dropdown');
-            const isHidden = dropdown.classList.contains('hidden');
-            dropdown.classList.toggle('hidden');
-            // Prevent body scroll when the filter dropdown is open
-            document.body.classList.toggle('overflow-hidden', isHidden);
+            modalWrapper.classList.remove('hidden');
+            document.body.classList.add('modal-active'); // Use a generic class for backdrop/scroll lock
             return;
         }
-        
         let routeNumber;
         if (filterBtn) {
             routeNumber = filterBtn.dataset.routeNumber;
@@ -1163,6 +1200,11 @@ function addEventListeners() {
             // Re-render filters to update active states and then re-render departures
             updateAndRenderRouteFilters();
             fetchAndRenderDepartures(); // Re-render with the new filter
+        }
+
+        if (closeBtn || (e.target === modalWrapper)) {
+            modalWrapper.classList.add('hidden');
+            document.body.classList.remove('modal-active');
         }
     });
 
@@ -1182,15 +1224,6 @@ function addEventListeners() {
             state.suggestionsContainer.classList.add('hidden');
             wrapper.classList.add('hidden');
             document.body.classList.remove('suggestions-active', 'modal-active');
-        }
-        // Close mobile filter dropdown if clicking outside and restore body scroll
-        const mobileFilterDropdown = document.getElementById('mobile-filter-dropdown');
-        if (mobileFilterDropdown && !mobileFilterDropdown.classList.contains('hidden')) {
-            if (!e.target.closest('#mobile-filter-toggle') && !e.target.closest('#mobile-filter-dropdown')) {
-                mobileFilterDropdown.classList.add('hidden');
-                // This is the crucial fix: ensure overflow is removed when closing the dropdown by clicking away.
-                document.body.classList.remove('overflow-hidden');
-            }
         }
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
