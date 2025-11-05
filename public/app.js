@@ -19,6 +19,7 @@ const state = {
     lastUpdatedEl: document.getElementById('last-updated'),
     searchInput: document.getElementById('stop-search-input'),
     suggestionsContainer: document.getElementById('autocomplete-suggestions'),
+    suggestionsWrapper: document.getElementById('suggestions-wrapper'),
     selectedStopsContainer: document.getElementById('selected-stops-container'),
     findNearMeBtn: document.getElementById('find-near-me-btn'),
     searchOptionsContainer: document.getElementById('search-options'),
@@ -26,8 +27,6 @@ const state = {
     mapContainer: document.getElementById('map'),
     mapOverlayText: document.getElementById('map-overlay-text'),
     routeFiltersContainer: document.getElementById('route-filters-container'),
-    directionFiltersContainer: document.getElementById('direction-filters-container'),
-    nearbyStopsCtaContainer: document.getElementById('nearby-stops-cta-container'),
 
     // App State
     ALL_STOPS_DATA: [ { name: 'Auchenflower Station, platform 2', id: '600284', stop_code: '600284' }, { name: 'Auchenflower Station, platform 4', id: '600286', stop_code: '600286' }, { name: 'Auchenflower stop 10/11, Milton Rd', id: '001951', stop_code: '001951' }],
@@ -47,9 +46,7 @@ const state = {
     routeEndMarker: null,
     activeRouteSelection: null,
     activeRouteFilters: new Set(),
-    activeDirection: null, // Can be 'Inbound', 'Outbound', or null
-    favoriteRoutes: new Set(),
-    nearbyStopsList: [], // To hold stops from a "near me" search
+    departuresObserver: null,
 };
 
 const VEHICLE_ICONS = {
@@ -79,14 +76,6 @@ function getCookie(name) {
         if (c.indexOf(nameEQ) == 0) return JSON.parse(c.substring(nameEQ.length,c.length));
     }
     return null;
-}
-
-function loadFavoriteRoutes() {
-    const favorites = getCookie('favoriteRoutes');
-    if (favorites && Array.isArray(favorites)) {
-        state.favoriteRoutes = new Set(favorites);
-        console.log('Favorite routes loaded:', state.favoriteRoutes);
-    }
 }
 
 function initMap(lat, lon) {
@@ -220,7 +209,7 @@ function plotStopsOnMap(stops, options = {}) {
             </div>`;
 
         const marker = L.marker([stop.latitude, stop.longitude], { icon: customIcon }).addTo(state.map).bindPopup(popupContent);
-
+        
         // Add a click listener to the marker itself to allow selection
         marker.on('click', () => {
             // Simulate clicking a suggestion item to add/remove the stop
@@ -228,7 +217,6 @@ function plotStopsOnMap(stops, options = {}) {
         });
 
         marker.stopCode = stop.stop_code;
-        marker.stopId = stop.id; // Store the unique stop_id on the marker
         state.stopMarkers.push(marker);
         bounds.extend([stop.latitude, stop.longitude]);
     });
@@ -276,13 +264,6 @@ function createDepartureCardHTML(dep) {
     if (state.activeRouteFilters.size > 0 && !state.activeRouteFilters.has(dep.routeNumber)) {
         return null;
     }
-    // NEW: Simplified Direction filter check
-    if (state.activeDirection) {
-        // direction_id: 0 is Outbound, 1 is Inbound
-        const direction = dep.directionId === 1 ? 'Inbound' : 'Outbound';
-        if (direction !== state.activeDirection)
-            return null;
-    }
 
     const urlParams = new URLSearchParams(window.location.search);
     const isDebug = urlParams.get('debug') === 'true';
@@ -298,10 +279,10 @@ function createDepartureCardHTML(dep) {
         const routeColor = dep.routeColor;
         const routeTextColor = dep.routeTextColor;
         const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
-        const fallbackClass = (!routeColor || !routeTextColor) ? 'bg-purple-700' : '';
-        cardContentHTML = `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 w-full">
+        const fallbackClass = (!routeColor || !routeTextColor) ? 'bg-green-600' : '';
+        cardContentHTML = `<div class="flex items-center gap-3 w-full">
             <div class="flex-shrink-0 text-white w-10 h-12 rounded-lg flex items-center justify-center text-2xl font-bold ${fallbackClass}" ${styles}>${VEHICLE_ICONS.Train}</div>
-            <div class="flex-grow min-w-0 basis-0">
+            <div class="flex-grow min-w-0">
                 <p class="text-base font-semibold text-gray-900 dark:text-white truncate">${trainLine}</p>
                 <h3 class="text-sm font-medium text-gray-600 dark:text-gray-400 truncate">${dep.headsign}</h3>
                 <p class="text-xs font-medium text-gray-500 dark:text-gray-400 truncate">${dep.stopName}</p>
@@ -315,11 +296,8 @@ function createDepartureCardHTML(dep) {
         const routeColor = dep.routeColor;
         const routeTextColor = dep.routeTextColor;
         const styles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
-        if (dep.vehicleType === 'Ferry') iconBgColor = 'bg-cyan-500';
-        const iconStyles = (routeColor && routeTextColor) ? `style="background-color: #${routeColor}; color: #${routeTextColor};"` : '';
-        const iconFallbackClass = (!routeColor || !routeTextColor) ? (dep.vehicleType === 'Ferry' ? 'bg-cyan-500' : 'bg-blue-500') : '';
-
-        cardContentHTML = `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 w-full"><div class="flex-shrink-0 ${iconFallbackClass} text-white w-12 h-12 rounded-lg flex items-center justify-center text-base font-bold" ${iconStyles}>${iconContent}</div><div class="flex-grow min-w-0 basis-0"><p class="text-base font-semibold text-gray-900 dark:text-white truncate">${dep.headsign}</p><h3 class="text-sm font-medium text-gray-600 dark:text-gray-400">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="text-lg font-bold text-blue-600 dark:text-blue-400">${dueInText}</div><div class="text-xs font-semibold text-gray-700 dark:text-gray-300 mt-1">Sch: ${scheduledTime}</div>${expectedHTML}${debugHTML}</div></div>`;
+        if (dep.vehicleType === 'Ferry') iconBgColor = dep.routeColor;
+        cardContentHTML = `<div class="flex items-center gap-3 w-full"><div class="flex-shrink-0 ${iconBgColor} text-white w-12 h-12 rounded-lg flex items-center justify-center text-base font-bold" ${styles}>${iconContent}</div><div class="flex-grow min-w-0"><p class="text-base font-semibold text-gray-900 dark:text-white truncate">${dep.headsign}</p><h3 class="text-sm font-medium text-gray-600 dark:text-gray-400 truncate">${dep.stopName}</h3></div><div class="text-right flex-shrink-0"><div class="text-lg font-bold text-blue-600 dark:text-blue-400">${dueInText}</div><div class="text-xs font-semibold text-gray-700 dark:text-gray-300 mt-1">Sch: ${scheduledTime}</div>${expectedHTML}${debugHTML}</div></div>`;
     }
     return `
         ${cardContentHTML}
@@ -344,7 +322,7 @@ function renderDepartures(departures) {
     const incomingTripIds = new Set();
     let visibleDepartures = 0;
     departures.forEach((dep, index) => {
-        if (dep) incomingTripIds.add(dep.trip_id);
+        incomingTripIds.add(dep.trip_id);
         const cardHTML = createDepartureCardHTML(dep);
 
         if (!cardHTML) return; // Skip if filtered out
@@ -360,7 +338,6 @@ function renderDepartures(departures) {
             const card = document.createElement('div');
             card.className = 'bg-white dark:bg-gray-800 p-4 rounded-xl shadow-lg flex flex-col departure-card';
             card.dataset.tripId = dep.trip_id;
-            card.dataset.stopId = dep.stop_id;
             card.innerHTML = cardHTML;
             card.style.order = index;
             container.appendChild(card);
@@ -373,36 +350,6 @@ function renderDepartures(departures) {
     if (visibleDepartures === 0) {
         container.innerHTML = `<div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg text-center"><p class="text-lg font-medium">No upcoming services found for the selected stops and filters.</p></div>`;
     }
-}
-
-function renderDirectionFilters(allDepartures, relevantDepartures) {
-    const container = state.directionFiltersContainer;
-
-    if (relevantDepartures.length === 0) {
-        container.innerHTML = '';
-        return;
-    }
-
-    const hasInbound = relevantDepartures.some(dep => dep.directionId === 1);
-    const hasOutbound = relevantDepartures.some(dep => dep.directionId === 0);
-
-    if (!hasInbound || !hasOutbound) {
-        container.innerHTML = ''; // Don't show filter if there's only one direction
-        return;
-    }
-
-    const buttonClass = (dir) => `direction-filter-btn px-3 py-1.5 text-sm font-medium border rounded-full transition-colors ${state.activeDirection === dir ? 'route-filter-active' : 'bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700'}`;
-
-    container.innerHTML = `
-        <div class="flex flex-wrap gap-2 items-center">
-            <span class="text-sm font-semibold text-gray-600 dark:text-gray-400">Direction:</span>
-            <div class="flex items-center border rounded-full p-0.5 bg-gray-100 dark:bg-gray-900">
-                <button class="${buttonClass(null)}" data-direction="All">All</button>
-                <button class="${buttonClass('Inbound')}" data-direction="Inbound">Inbound ↑</button>
-                <button class="${buttonClass('Outbound')}" data-direction="Outbound">Outbound ↓</button>
-            </div>
-        </div>
-    `;
 }
 
 async function fetchAndRenderDepartures() {
@@ -418,14 +365,6 @@ async function fetchAndRenderDepartures() {
         
         state.lastUpdatedEl.textContent = `Last updated: ${new Date().toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
         
-        // Determine which departures are relevant based on the *route* filter first.
-        const relevantDepartures = state.activeRouteFilters.size > 0
-            ? upcomingDepartures.filter(dep => state.activeRouteFilters.has(dep.routeNumber))
-            : upcomingDepartures;
-
-        // First, render the direction filters based on all possible departures
-        renderDirectionFilters(upcomingDepartures, relevantDepartures);
-        // Then, render the departure cards, which will internally apply the direction filter
         renderDepartures(upcomingDepartures);
 
     } catch (error) {
@@ -438,8 +377,6 @@ async function updateAndRenderRouteFilters() {
     if (state.selectedStops.length === 0) {
         state.routeFiltersContainer.innerHTML = '';
         state.activeRouteFilters.clear();
-        state.activeDirection = null;
-        state.directionFiltersContainer.innerHTML = ''; // Also clear direction filters
         return;
     }
 
@@ -448,15 +385,11 @@ async function updateAndRenderRouteFilters() {
         const response = await fetch(`${state.routesForStopsEndpoint}?stop_codes=${stopCodes}`);
         const routes = await response.json();
 
-        // Get the set of all routes available at the selected stops.
+        // Prune active filters that are no longer relevant
         const relevantRouteNumbers = new Set(routes.map(r => r.route_short_name));
-
-        // Automatically apply favorite routes if they are available at this stop.
-        // This is the core of the new feature.
-        state.activeRouteFilters.clear(); // Start with a clean slate for filters.
-        state.favoriteRoutes.forEach(favRoute => {
-            if (relevantRouteNumbers.has(favRoute)) {
-                state.activeRouteFilters.add(favRoute);
+        state.activeRouteFilters.forEach(filter => {
+            if (!relevantRouteNumbers.has(filter)) {
+                state.activeRouteFilters.delete(filter);
             }
         });
 
@@ -478,7 +411,7 @@ async function updateAndRenderRouteFilters() {
 
                 <!-- Mobile: Dropdown button -->
                 <button id="mobile-filter-toggle" class="md:hidden flex items-center gap-2 px-4 py-2 text-sm font-medium border rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700">
-                    Filter Routes ${activeFilterCount > 0 ? `<span class="filter-count-badge bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
+                    Filter Routes ${activeFilterCount > 0 ? `<span class="bg-blue-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">${activeFilterCount}</span>` : ''}
                 </button>
                 <div id="mobile-filter-dropdown" class="absolute top-full left-0 mt-2 w-full bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-30 hidden p-2 grid grid-cols-2 sm:grid-cols-3 gap-1 max-h-[50vh] overflow-y-auto">
                     ${routes.map(route => `<label class="flex items-center gap-3 p-2 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"><input type="checkbox" class="route-filter-checkbox h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" data-route-number="${route.route_short_name}" ${state.activeRouteFilters.has(route.route_short_name) ? 'checked' : ''}> <span class="flex items-center gap-1.5">${getIcon(route.route_type)} ${route.route_short_name}</span></label>`).join('')}
@@ -576,31 +509,19 @@ function renderFavoritesDropdown() {
         return;
     }
 
-    // On desktop, the dropdown is inside the container. On mobile, it's in a modal.
     const favoriteNames = Object.keys(favorites);
-    const dropdownHTML = `
-        <div id="favorites-dropdown" class="bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000] w-56">
-            <div class="p-2 font-bold text-sm border-b dark:border-gray-700 flex justify-between items-center">
-                <span>My Favorites</span>
-                <button id="close-favorites-btn" class="md:hidden text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">&times;</button>
-            </div>
-            ${favoriteNames.map(name => `...`).join('')}
-        </div>`;
-
-    // Always render the button in the header
-    if (!document.getElementById('favorites-btn')) {
-        state.favoritesContainer.innerHTML = `<button id="favorites-btn" class="text-2xl hover:text-yellow-400 transition-colors" title="My Favorites">❤️</button>`;
-    }
-
-    const dropdownContent = `
-        <div class="p-2 font-bold text-sm border-b dark:border-gray-700 flex justify-between items-center">
-            <span>My Favorites</span>
-            <button id="close-favorites-btn" class="md:hidden text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">&times;</button>
+    state.favoritesContainer.innerHTML = `
+        <button id="favorites-btn" class="text-2xl hover:text-yellow-400 transition-colors" title="My Favorites">❤️</button>
+        <div id="favorites-dropdown" class="absolute right-0 mt-2 w-56 bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000] hidden">
+            <div class="p-2 font-bold text-sm border-b dark:border-gray-700">My Favorites</div>
+            ${favoriteNames.map(name => `
+                <div class="flex justify-between items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">
+                    <a href="#" class="favorite-list-item flex-grow" data-name="${name}">${name}</a>
+                    <button class="delete-favorite-btn ml-2 text-red-500 hover:text-red-700 font-bold" data-name="${name}" title="Delete favorite">&times;</button>
+                </div>
+            `).join('')}
         </div>
-        ${favoriteNames.map(name => `<div class="flex justify-between items-center px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700"><a href="#" class="favorite-list-item flex-grow" data-name="${name}">${name}</a><button class="delete-favorite-btn ml-2 text-red-500 hover:text-red-700 font-bold" data-name="${name}" title="Delete favorite">&times;</button></div>`).join('')}`;
-
-    const favoritesModalWrapper = document.getElementById('favorites-modal-wrapper');
-    favoritesModalWrapper.innerHTML = `<div id="favorites-dropdown" class="bg-white dark:bg-gray-800 border rounded-lg shadow-xl z-[2000]">${dropdownContent}</div>`;
+    `;
 }
 
 function saveCurrentSelectionAsFavorite() {
@@ -623,96 +544,82 @@ function loadFavorite(name) {
     if (favorites && favorites[name]) {
         state.selectedStops = favorites[name]; // Favorites now store {id, code, name}
         renderSelectedStopTags();
-        updateAndRenderRouteFilters(); // This will fetch routes, build the filter UI, and pre-select favorites.
         fetchAndRenderDepartures();
     }
 }
 
 function positionSuggestions() {
-    const wrapper = document.getElementById('suggestions-wrapper');
-    const container = state.suggestionsContainer; // This is the inner div now
+    const container = state.suggestionsContainer;
+    const inputRect = state.searchInput.getBoundingClientRect();
 
-    if (window.innerWidth < 768) {
-        // On mobile, we use the modal view controlled by the wrapper.
-        // The CSS handles all the positioning.
-        document.body.classList.add('suggestions-active');
-        wrapper.classList.remove('hidden');
-        container.style.position = 'static'; // Reset any fixed positioning
+    // Use fixed positioning relative to the viewport. This is more reliable,
+    // especially on mobile where the virtual keyboard can affect layout.
+    container.style.position = 'fixed';
+    container.style.left = `${inputRect.left}px`;
+    container.style.width = `${inputRect.width}px`;
+    container.style.overflowY = 'auto';
+
+    // Use the Visual Viewport API for better mobile keyboard handling.
+    // It gives the dimensions of the viewport as it is currently visible to the user.
+    const viewport = window.visualViewport || { height: window.innerHeight, offsetTop: 0 };
+    const viewportTop = viewport.offsetTop;
+    const viewportHeight = viewport.height;
+
+    const spaceBelow = viewportHeight - (inputRect.bottom - viewportTop);
+    const spaceAbove = inputRect.top - viewportTop;
+
+    // Prefer positioning below unless there's significantly more space above.
+    const positionBelow = spaceBelow >= 200 || spaceBelow > spaceAbove;
+
+    if (positionBelow) {
+        // Position below the input
+        container.style.top = `${inputRect.bottom}px`;
+        container.style.bottom = '';
+        // Use a margin of 10px from the bottom of the visual viewport.
+        container.style.maxHeight = `${spaceBelow - 10}px`;
     } else {
-        // On desktop, position it directly below the search input.
-        const inputRect = state.searchInput.getBoundingClientRect();
-        wrapper.classList.add('hidden'); // The wrapper is not used on desktop
-        container.classList.remove('hidden'); // Show the container directly
-        container.style.position = 'fixed';
-        container.style.left = `${inputRect.left}px`;
-        container.style.top = `${inputRect.bottom + 5}px`; // Add a small gap
-        container.style.width = `${inputRect.width}px`;
-        container.style.maxHeight = '70vh';
-        container.style.overflowY = 'auto';
+        // Position above the input
+        container.style.top = '';
+        container.style.bottom = `${viewportHeight - (inputRect.top - viewportTop)}px`;
+        // Use a margin of 10px from the top of the visual viewport.
+        container.style.maxHeight = `${spaceAbove - 10}px`;
     }
 }
-
 function renderSuggestions(results) {
     results.stops.forEach(stop => {
         if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
     });
-
-    const query = state.searchInput.value.trim();
-    const isNearbySearch = state.nearbyStopsList.length > 0 && results.stops.length === state.nearbyStopsList.length;
-    const modalTitle = isNearbySearch ? 'Nearby Stops' : `Results for "${query}"`;
-
-    state.suggestionsContainer.innerHTML = '';
-
-    // --- Create Modal Header ---
-    const headerHTML = `
-        <div class="flex-shrink-0 p-3 border-b dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800 sticky top-0 z-10">
-            <h3 class="font-bold text-lg">${modalTitle}</h3>
-            <button id="close-suggestions-btn" class="text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400 font-bold text-2xl leading-none">&times;</button>
-        </div>`;
-    state.suggestionsContainer.insertAdjacentHTML('beforeend', headerHTML);
-
-    const contentContainer = document.createElement('div');
-    contentContainer.className = 'flex-grow overflow-y-auto';
-    state.suggestionsContainer.appendChild(contentContainer);
-
     const groupedStops = groupStops(results.stops);
-    const checkmarkIcon = `<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
-
+    state.suggestionsContainer.innerHTML = '';
     if (groupedStops.length > 0) {
+        state.suggestionsContainer.innerHTML = `
+            <div class="flex justify-between items-center p-2 border-b dark:border-gray-700">
+                <p class="text-xs text-gray-500 dark:text-gray-400">Click a stop to add or remove it.</p>
+                <button id="close-suggestions-btn" class="text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">close</button>
+            </div>`;
+        
         const stopsHeader = document.createElement('div');
         stopsHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
         stopsHeader.textContent = 'Stops';
-        contentContainer.appendChild(stopsHeader);
+        state.suggestionsContainer.appendChild(stopsHeader);
 
         groupedStops.forEach(item => {
-            const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId);
+            const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId); // Use ID for checking.
             const selectedClass = (stopId) => isSelected(stopId) ? 'suggestion-selected' : '';
-            const selectedIcon = (stopId) => isSelected(stopId) ? checkmarkIcon : '';
+            const selectedText = (stopId) => isSelected(stopId) ? '' : 'hidden';
 
             if (item.is_parent) {
                 const groupEl = document.createElement('div');
                 groupEl.className = 'border-b dark:border-gray-700';
-                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.id)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status">${selectedIcon(child.id)}</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
-                contentContainer.appendChild(groupEl);
+                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                state.suggestionsContainer.appendChild(groupEl);
             } else {
                 const itemEl = document.createElement('div');
                 itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.id)}`;
                 itemEl.dataset.id = item.id;
                 itemEl.dataset.code = item.stop_code;
-                itemEl.innerHTML = `<div class="flex justify-between items-center w-full">
-                    <div class="flex items-center gap-3 min-w-0">
-                        <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                        <div class="min-w-0">
-                            <div class="font-semibold truncate">${item.name}</div>
-                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2 flex-shrink-0 ml-2">
-                        <div class="selection-status">${selectedIcon(item.id)}</div>
-                        <span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span>
-                    </div>
-                </div>`;
-                contentContainer.appendChild(itemEl);
+                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.id)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
+                state.suggestionsContainer.appendChild(itemEl);
             }
         });
     }
@@ -721,30 +628,44 @@ function renderSuggestions(results) {
         const routesHeader = document.createElement('div');
         routesHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
         routesHeader.textContent = 'Routes';
-        contentContainer.appendChild(routesHeader);
+        state.suggestionsContainer.appendChild(routesHeader);
 
         results.routes.forEach(route => {
-            const itemEl = document.createElement('div');
-            itemEl.className = 'p-3 cursor-pointer suggestion-item route-suggestion border-b dark:border-gray-700';
-            itemEl.dataset.routeId = route.route_id;
-            itemEl.dataset.headsign = route.trip_headsign;
-            itemEl.dataset.shapeId = route.shape_id;
-            itemEl.dataset.routeColor = route.route_color || '3b82f6'; // Default to blue
-            itemEl.innerHTML = `<div class="flex justify-between items-center">
-                <div><div class="font-semibold">${route.route_short_name} ${route.trip_headsign}</div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${route.route_long_name}</div></div>
-                <div class="route-actions flex-shrink-0 ml-2"></div>
-            </div>`;
-            contentContainer.appendChild(itemEl);
+            const li = document.createElement('li');
+            li.className = 'suggestion-item border-b dark:border-gray-700';
+
+            const params = new URLSearchParams({
+                route_id: route.route_id,
+                shape_id: route.shape_id,
+                headsign: route.trip_headsign,
+                route_short_name: route.route_short_name,
+                route_long_name: route.route_long_name,
+                route_color: route.route_color || '0284c7' // Pass route color with a fallback
+            });
+
+            const link = document.createElement('a');
+            link.href = `route.html?${params.toString()}`;
+            link.className = 'p-3 w-full flex justify-between items-center cursor-pointer';
+            link.innerHTML = `
+                <div>
+                    <div class="font-semibold">${route.route_short_name} ${route.trip_headsign}</div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${route.route_long_name}</div>
+                </div>
+                <span class="text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300 font-medium me-2 px-2.5 py-0.5 rounded">Route</span>
+            `;
+            li.appendChild(link);
+            state.suggestionsContainer.appendChild(li);
         });
     }
 
     if (groupedStops.length > 0 || (results.routes && results.routes.length > 0)) {
-        // The positionSuggestions function will handle visibility
+        state.suggestionsWrapper.classList.remove('hidden');
+        document.body.classList.add('suggestions-active');
     } else {
-        contentContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No results found.</div>`;
+        state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
+        state.suggestionsWrapper.classList.remove('hidden');
+        document.body.classList.add('suggestions-active');
     }
-
-    // This function now also controls visibility
     positionSuggestions();
 }
 
@@ -755,10 +676,10 @@ function updateSuggestionStates() {
         const id = item.dataset.id; // Use data-id for the lookup.
         if (isSelected(id)) {
             item.classList.add('suggestion-selected');
-            item.querySelector('.selection-status').innerHTML = `<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
+            item.querySelector('.selection-status')?.classList.remove('hidden');
         } else {
             item.classList.remove('suggestion-selected');
-            item.querySelector('.selection-status').innerHTML = '';
+            item.querySelector('.selection-status')?.classList.add('hidden');
         }
     });
 }
@@ -779,17 +700,7 @@ async function performNearbySearch() {
             return;
         }
         const nearbyStops = await response.json();
-        state.nearbyStopsList = nearbyStops; // Store for later
-
-        // Instead of showing suggestions, show a CTA button
-        state.suggestionsContainer.classList.add('hidden');
-        document.body.classList.remove('suggestions-active');
-        state.nearbyStopsCtaContainer.innerHTML = `
-            <button id="show-nearby-list-btn" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2.5 px-4 rounded-lg transition duration-300 flex items-center justify-center gap-2">
-                List Nearby Stops (${nearbyStops.length})
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-            </button>
-        `;
+        renderSuggestions({ stops: nearbyStops, routes: [] });
 
         state.mapOverlayText.innerHTML = `<span>Showing stops near you</span>
             <button id="clear-map-overlay-btn" class="ml-2 flex-shrink-0 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm hover:bg-red-700" title="Clear map view">
@@ -798,6 +709,12 @@ async function performNearbySearch() {
         `;
         state.mapOverlayText.classList.remove('hidden');
         plotStopsOnMap(nearbyStops);
+        const searchFurtherBtn = document.createElement('div');
+        searchFurtherBtn.id = 'search-further-btn';
+        searchFurtherBtn.className = 'p-3 text-center text-blue-600 dark:text-blue-400 font-semibold cursor-pointer suggestion-item';
+        const nextRadiusKm = (state.currentRadius + 500) / 1000;
+        searchFurtherBtn.textContent = `Search further (${nextRadiusKm}km)`;
+        state.suggestionsContainer.appendChild(searchFurtherBtn);
     } catch (error) {
         console.error('Error fetching nearby stops:', error);
     } finally {
@@ -840,10 +757,8 @@ function handleStopSelection(stop) {
         state.selectedStops = state.selectedStops.filter(s => s.id !== stop.id);
     }
 
-    state.nearbyStopsCtaContainer.innerHTML = ''; // Clear the "List Nearby" button on selection
     renderSelectedStopTags();
     updateAndRenderRouteFilters();
-    state.activeDirection = null; // Clear direction filters when stops change
     fetchAndRenderDepartures();
 
     // Plot the newly selected/deselected stops on the map.
@@ -859,7 +774,6 @@ function addEventListeners() {
         // When a new search is initiated, clear any existing route display from the map.
         // This resets the view to focus on the new search context.
         if (state.routeShapeLayer) {
-            state.nearbyStopsCtaContainer.innerHTML = '';
             clearRouteDisplay();
         }
 
@@ -881,118 +795,10 @@ function addEventListeners() {
         const parentToggle = e.target.closest('.parent-toggle');
         const closeBtn = e.target.closest('#close-suggestions-btn');
         const routeSuggestion = e.target.closest('.route-suggestion');
-        const showRouteBtn = e.target.closest('.show-route-btn');
+        // Check if the item is a stop suggestion and not a route link
+        const isStopItem = suggestionItem && suggestionItem.hasAttribute('data-id');
 
-        if (e.target.id === 'search-further-btn') {
-            state.currentRadius += 500;
-            performNearbySearch();
-            return;
-        }
-        if (closeBtn) {
-            const wrapper = document.getElementById('suggestions-wrapper');
-            state.suggestionsContainer.classList.add('hidden');
-            wrapper.classList.add('hidden');
-            document.body.classList.remove('suggestions-active');
-            return;
-        }
-        if (routeSuggestion && !e.target.closest('.route-actions')) {
-            // First click: Select the route, don't show it yet.
-            document.querySelectorAll('.route-suggestion').forEach(el => el.classList.remove('suggestion-selected'));
-            routeSuggestion.classList.add('suggestion-selected');
-            routeSuggestion.querySelector('.route-actions').innerHTML = `
-                <button class="show-route-btn bg-blue-600 text-white px-3 py-1 rounded-md text-sm font-semibold">Show Route on Map</button>
-            `;
-            state.activeRouteSelection = routeSuggestion.dataset; // Store data for the next step
-        } else if (showRouteBtn) {
-            // Second click: User confirms to show the route.
-            if (!state.activeRouteSelection) return;
-
-            // Add loading feedback to the button
-            showRouteBtn.disabled = true;
-            showRouteBtn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg> Loading...`;
-            const { routeId, headsign, shapeId, routeColor } = state.activeRouteSelection;
-            try {
-                // Fetch stops and shape in parallel
-                const [stopsResponse, shapeResponse] = await Promise.all([
-                    fetch(`${state.stopsForRouteEndpoint}?route_id=${routeId}&headsign=${encodeURIComponent(headsign)}`),
-                    fetch(`${state.routeShapeEndpoint}?shape_id=${shapeId}`)
-                ]);
-                if (!stopsResponse.ok) {
-                    throw new Error(`Failed to fetch stops: ${stopsResponse.statusText}`);
-                }
-
-                const stopsForRoute = await stopsResponse.json();
-                const routeShape = await shapeResponse.json();
-
-                // Sort stops by distance from user if location is available
-                if (state.cachedPosition) {
-                    const userLat = state.cachedPosition.coords.latitude;
-                    const userLon = state.cachedPosition.coords.longitude;
-                    const distance = (lat1, lon1, lat2, lon2) => Math.sqrt(Math.pow(lat2 - lat1, 2) + Math.pow(lon2 - lon1, 2));
-
-                    stopsForRoute.sort((a, b) => {
-                        return distance(userLat, userLon, a.latitude, a.longitude) - distance(userLat, userLon, b.latitude, b.longitude);
-                    });
-                }
-
-                if (state.routeShapeLayer) state.routeShapeLayer.remove();
-                if (state.routeStartMarker) state.routeStartMarker.remove();
-                if (state.routeEndMarker) state.routeEndMarker.remove();
-
-                if (routeShape && routeShape.coordinates && routeShape.coordinates.length > 1) {
-                    const startCoords = routeShape.coordinates[0];
-                    const endCoords = routeShape.coordinates[routeShape.coordinates.length - 1];
-
-                    const startIcon = L.divIcon({ html: '🟢', className: 'route-endpoint-marker', iconSize: [20, 20], iconAnchor: [10, 10] });
-                    const endIcon = L.divIcon({ html: '🔴', className: 'route-endpoint-marker', iconSize: [20, 20], iconAnchor: [10, 10] });
-
-                    // Leaflet uses [lat, lon], GeoJSON uses [lon, lat]
-                    state.routeStartMarker = L.marker([startCoords[1], startCoords[0]], { icon: startIcon, zIndexOffset: 1000 }).addTo(state.map).bindPopup('Route Start');
-                    state.routeEndMarker = L.marker([endCoords[1], endCoords[0]], { icon: endIcon, zIndexOffset: 1000 }).addTo(state.map).bindPopup('Route End');
-                }
-
-                stopsForRoute.forEach(stop => {
-                    if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) { state.ALL_STOPS_DATA.push(stop); }
-                });
-
-                if (routeShape) {
-                    state.routeShapeLayer = L.geoJSON(routeShape, { style: { color: `#${routeColor}`, weight: 4, opacity: 0.7 } }).addTo(state.map);
-                }
-                
-                // Don't add to selected stops, just find the nearest and plot
-                const nearestStop = findNearestStop(stopsForRoute);
-
-                // Instead of hiding, re-render suggestions to show only stops for this route
-                renderSuggestions({ stops: stopsForRoute, routes: [] });
-                state.suggestionsContainer.querySelector('.border-b').insertAdjacentHTML('afterend', `
-                    <div class="p-2 bg-blue-100 dark:bg-blue-900 text-sm text-blue-800 dark:text-blue-200">
-                        Showing stops for route <strong>${routeId} - ${headsign}</strong>. Select a station.
-                    </div>
-                `);
-                state.mapOverlayText.textContent = `${routeId}: ${headsign}`;
-                state.mapOverlayText.classList.remove('hidden');
-
-                state.mapOverlayText.innerHTML = `<span class="truncate">${routeId}: ${headsign}</span>
-                    <button id="clear-map-overlay-btn" class="ml-2 flex-shrink-0 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm hover:bg-red-700" title="Clear map view">
-                        &times;
-                    </button>
-                `;
-
-                plotStopsOnMap(stopsForRoute, { highlightedStopCode: nearestStop ? nearestStop.stop_code : null, useDots: true });
-                
-                if (nearestStop) {
-                    state.map.setView([nearestStop.latitude, nearestStop.longitude], 16);
-                } else if (state.routeShapeLayer) {
-                    state.map.fitBounds(state.routeShapeLayer.getBounds());
-                }
-            } catch (error) {
-                console.error('Error fetching stops for route:', error);
-                alert('Could not load stops for the selected route.');
-            }
-        } else if (suggestionItem && !suggestionItem.classList.contains('route-suggestion') && !e.target.closest('.route-actions')) {
+        if (isStopItem && !suggestionItem.classList.contains('route-suggestion') && !e.target.closest('.route-actions')) {
             const stopId = suggestionItem.dataset.id;
             const stop = state.ALL_STOPS_DATA.find(s => s.id === stopId);
             
@@ -1007,7 +813,8 @@ function addEventListeners() {
                 
                 state.activeRouteSelection = null;
                 state.searchInput.value = '';
-                state.suggestionsContainer.classList.add('hidden');
+                state.suggestionsWrapper.classList.add('hidden');
+                document.body.classList.remove('suggestions-active');
                 clearRouteDisplay();
                 plotStopsOnMap(state.selectedStops.map(s => state.ALL_STOPS_DATA.find(db_s => db_s.stop_code === s.code)).filter(Boolean));
                 return;
@@ -1030,7 +837,6 @@ function addEventListeners() {
         if (e.target.matches('.remove-tag-btn')) {
             const stopIdToRemove = e.target.dataset.id;
             state.selectedStops = state.selectedStops.filter(stop => stop.id !== stopIdToRemove);
-            state.nearbyStopsCtaContainer.innerHTML = '';
             clearRouteDisplay();
             renderSelectedStopTags();
             updateAndRenderRouteFilters();
@@ -1045,7 +851,6 @@ function addEventListeners() {
         if (!navigator.geolocation) { return alert('Geolocation is not supported by your browser.'); }
         
         if (state.cachedPosition && state.positionCacheTimestamp && (Date.now() - state.positionCacheTimestamp < state.CACHE_DURATION_MS)) {
-            state.nearbyStopsCtaContainer.innerHTML = '';
             state.lastSearchCoords = state.cachedPosition.coords;
             state.currentRadius = 500;
             state.activeTypes = [];
@@ -1055,7 +860,6 @@ function addEventListeners() {
         }
 
         state.findNearMeBtn.querySelector('span').textContent = 'Acquiring GPS...';
-        state.nearbyStopsCtaContainer.innerHTML = '';
         state.findNearMeBtn.disabled = true;
         state.currentRadius = 500;
         state.activeTypes = [];
@@ -1090,33 +894,15 @@ function addEventListeners() {
         }
     });
 
-    document.body.addEventListener('click', (e) => {
-        const favoritesModalWrapper = document.getElementById('favorites-modal-wrapper');
-        const favoritesDropdown = document.getElementById('favorites-dropdown');
-
+    state.favoritesContainer.addEventListener('click', (e) => {
+        const dropdown = document.getElementById('favorites-dropdown');
         if (e.target.id === 'favorites-btn') {
-            if (window.innerWidth < 768) {
-                favoritesModalWrapper.classList.remove('hidden');
-                document.body.classList.add('modal-active');
-            } else {
-                // Desktop: toggle dropdown next to button
-                const btnRect = e.target.getBoundingClientRect();
-                favoritesDropdown.style.position = 'absolute';
-                favoritesDropdown.style.top = `${btnRect.bottom + 5}px`;
-                favoritesDropdown.style.right = '0px';
-                favoritesDropdown.style.left = 'auto';
-                favoritesDropdown.style.width = '14rem'; // 56 * 4px = 224px
-                favoritesModalWrapper.classList.toggle('hidden');
-            }
-        } else if (e.target.closest('#close-favorites-btn')) {
-            favoritesModalWrapper.classList.add('hidden');
-            document.body.classList.remove('modal-active');
+            dropdown?.classList.toggle('hidden');
         } else if (e.target.classList.contains('favorite-list-item')) {
             e.preventDefault();
             const favName = e.target.dataset.name;
             loadFavorite(favName);
-            favoritesModalWrapper.classList.add('hidden');
-            document.body.classList.remove('modal-active');
+            dropdown?.classList.add('hidden');
         } else if (e.target.classList.contains('delete-favorite-btn')) {
             e.preventDefault();
             const favName = e.target.dataset.name;
@@ -1124,11 +910,9 @@ function addEventListeners() {
                 const favorites = getCookie('favoriteStops') || {};
                 delete favorites[favName];
                 setCookie('favoriteStops', favorites, 365);
+                alert(`Favorite "${favName}" deleted.`);
                 renderFavoritesDropdown();
             }
-        } else if (!e.target.closest('#favorites-btn') && !e.target.closest('#favorites-dropdown')) {
-            favoritesModalWrapper.classList.add('hidden');
-            document.body.classList.remove('modal-active');
         }
     });
 
@@ -1166,78 +950,30 @@ function addEventListeners() {
         }
     });
 
-    state.directionFiltersContainer.addEventListener('click', (e) => {
-        const filterBtn = e.target.closest('.direction-filter-btn');
-        if (filterBtn) {
-            const direction = filterBtn.dataset.direction;
-            state.activeDirection = direction === 'All' ? null : direction;
-            fetchAndRenderDepartures(); // Re-render with the new filter
-        }
-    });
-
     document.addEventListener('click', (e) => {
-        const wrapper = document.getElementById('suggestions-wrapper');
-        // Close if clicking outside the search input and the suggestions container (or its wrapper)
-        if (!e.target.closest('#stop-search-input') && !e.target.closest('#suggestions-wrapper') && !e.target.closest('#autocomplete-suggestions')) {
-            state.suggestionsContainer.classList.add('hidden');
-            wrapper.classList.add('hidden');
-            document.body.classList.remove('suggestions-active', 'modal-active');
+        if (!e.target.closest('#stop-search-input') && !e.target.closest('#autocomplete-suggestions')) {
+            state.suggestionsWrapper.classList.add('hidden');
+            document.body.classList.remove('suggestions-active');
         }
-        // Close mobile filter dropdown if clicking outside and restore body scroll
+        // Close mobile filter dropdown if clicking outside
         const mobileFilterDropdown = document.getElementById('mobile-filter-dropdown');
         if (mobileFilterDropdown && !mobileFilterDropdown.classList.contains('hidden')) {
             if (!e.target.closest('#mobile-filter-toggle') && !e.target.closest('#mobile-filter-dropdown')) {
                 mobileFilterDropdown.classList.add('hidden');
-                // This is the crucial fix: ensure overflow is removed when closing the dropdown by clicking away.
                 document.body.classList.remove('overflow-hidden');
             }
         }
         // Clear map overlay if clear button is clicked
         if (e.target.id === 'clear-map-overlay-btn') {
             clearRouteDisplay();
-            state.nearbyStopsCtaContainer.innerHTML = '';
-        }
-
-        // Handle clicking the new "List Nearby Stops" button
-        if (e.target.id === 'show-nearby-list-btn') {
-            renderSuggestions({ stops: state.nearbyStopsList, routes: [] });
-            
-            // Add the "Search Further" button to the bottom of the list
-            const searchFurtherBtn = document.createElement('div');
-            searchFurtherBtn.id = 'search-further-btn';
-            searchFurtherBtn.className = 'p-3 text-center text-blue-600 dark:text-blue-400 font-semibold cursor-pointer suggestion-item';
-            const nextRadiusKm = (state.currentRadius + 500) / 1000;
-            searchFurtherBtn.textContent = `Search further (${nextRadiusKm}km)`;
-            state.suggestionsContainer.appendChild(searchFurtherBtn);
-        }
-
-        // Handle clicking anywhere on the departure card to highlight the map marker
-        const card = e.target.closest('.departure-card');
-        if (card && !e.target.matches('.more-details-btn')) {
-            const stopId = card.dataset.stopId;
-            if (stopId) {
-                const markerToHighlight = state.stopMarkers.find(m => m.stopId === stopId);
-                if (markerToHighlight) {
-                    const iconElement = markerToHighlight.getElement();
-                    if (iconElement) {
-                        iconElement.classList.add('marker-highlight-red');
-                        state.map.panTo(markerToHighlight.getLatLng());
-                        setTimeout(() => {
-                            iconElement.classList.remove('marker-highlight-red');
-                        }, 2000); // Highlight for 2 seconds
-                    }
-                }
-            }
         }
     });
 
     // Add a listener to reposition the suggestions if the viewport changes
     // (e.g., mobile keyboard appears/disappears).
     window.visualViewport?.addEventListener('resize', () => {
-        if (!state.suggestionsContainer.classList.contains('hidden')) {
-            if (window.innerWidth >= 768) { // Only reposition on desktop
-                positionSuggestions();
-            }
+        if (!state.suggestionsWrapper.classList.contains('hidden')) {
+            positionSuggestions();
         }
     });
     
@@ -1273,11 +1009,34 @@ function addEventListeners() {
     });
 }
 
+function setupDeparturesObserver() {
+    // Disconnect any existing observer
+    if (state.departuresObserver) {
+        state.departuresObserver.disconnect();
+    }
+
+    const sentinel = document.getElementById('scroll-sentinel'); // This is the observer target
+    if (!sentinel) return; // Exit if the sentinel element isn't in the DOM
+
+    const observerCallback = (entries) => {
+        entries.forEach(entry => {
+            // On mobile, when the sentinel is NOT intersecting the viewport (i.e., scrolled past it),
+            // add the 'departures-expanded' class to the body.
+            document.body.classList.toggle('departures-expanded', !entry.isIntersecting && window.innerWidth < 768);
+        });
+    };
+
+    state.departuresObserver = new IntersectionObserver(observerCallback, {
+        root: null, // Observe within the viewport
+        threshold: 0
+    });
+
+    state.departuresObserver.observe(sentinel);
+}
+
 function clearAllStops() {
     state.selectedStops = [];
     state.activeRouteFilters.clear();
-    state.nearbyStopsCtaContainer.innerHTML = '';
-    state.activeDirection = null;
     clearRouteDisplay();
     renderSelectedStopTags();
     updateAndRenderRouteFilters();
@@ -1296,90 +1055,19 @@ function requestUserLocation(isSilent = false) {
     });
 }
 
-async function smartInitialLoad() {
-    loadFavoriteRoutes();
-
-    try {
-        // 1. Attempt to get user's location silently.
-        const position = await requestUserLocation(true);
-        const { latitude, longitude } = position.coords;
-        initMap(latitude, longitude); // Initialize map early with user's location.
-
-        // 2. Fetch all stops near the user's location.
-        const response = await fetch(`${state.findNearMeEndpoint}?lat=${latitude}&lon=${longitude}&radius=500`);
-        if (!response.ok) throw new Error('Failed to fetch nearby stops');
-        const nearbyStops = await response.json();
-        state.nearbyStopsList = nearbyStops; // Store the fetched stops in the global state
-
-        if (nearbyStops.length === 0) {
-            fetchAndRenderDepartures(); // Fetch default/empty departures
-            return;
-        }
-
-        // Cache all nearby stops data
-        nearbyStops.forEach(stop => {
-            if (!state.ALL_STOPS_DATA.some(s => s.id === stop.id)) {
-                state.ALL_STOPS_DATA.push(stop);
-            }
-        });
-
-        let stopsToSelect = [];
-        let initialLoadMessage = "Showing departures from the closest stop.";
-
-        if (state.favoriteRoutes.size > 0) {
-            // 3a. Prioritize stops that service favorite routes.
-            const favoriteStops = nearbyStops.filter(stop => {
-                const servicing = stop.servicing_routes ? stop.servicing_routes.split(', ') : [];
-                return servicing.some(route => state.favoriteRoutes.has(route));
-            });
-
-            if (favoriteStops.length > 0) {
-                stopsToSelect = favoriteStops;
-                initialLoadMessage = "Showing departures from nearby stops for your favorite routes.";
-            }
-        }
-
-        if (stopsToSelect.length === 0) {
-            // 3b. Fallback: If no favorite routes match, select the single closest stop.
-            stopsToSelect.push(nearbyStops[0]); // nearbyStops is already sorted by distance.
-        }
-
-        // 4. Select the determined stops.
-        state.selectedStops = stopsToSelect.map(stop => ({ id: stop.id, code: stop.stop_code, name: stop.name }));
-
-        // 5. Update the UI.
-        renderSelectedStopTags();
-        await updateAndRenderRouteFilters(); // This will apply favorite routes to the filter UI.
-
-        // Show the CTA to view the list of nearby stops
-        state.nearbyStopsCtaContainer.innerHTML = `
-            <button id="show-nearby-list-btn" class="w-full sm:w-auto bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold py-2.5 px-4 rounded-lg transition duration-300 flex items-center justify-center gap-2">
-                List Nearby Stops (${nearbyStops.length})
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
-            </button>
-        `;
-        
-        // 6. Fetch and render the departures, which will now be filtered.
-        await fetchAndRenderDepartures();
-        state.departuresContainer.insertAdjacentHTML('afterbegin', `<div class="text-sm text-center text-gray-500 dark:text-gray-400 mb-4 p-2 bg-gray-50 dark:bg-gray-800 rounded-lg">${initialLoadMessage}</div>`);
-        plotStopsOnMap(nearbyStops); // Plot all nearby stops on the map for context.
-
-    } catch (error) {
-        // If location fails or there's an error, fall back to default behavior.
-        console.log("Smart load failed, falling back to default. Error:", error.message);
-        initializeMapWithUserLocation(); // Default map init
-        fetchAndRenderDepartures(); // Fetch default/empty departures
-    }
-}
-
 function init() {
+    // Set flex on the container for the order property to work
     state.departuresContainer.style.display = 'flex';
     state.departuresContainer.style.flexDirection = 'column';
 
+    setupDeparturesObserver();
+
     addEventListeners();
+    initializeMapWithUserLocation();
     renderFavoritesDropdown();
+    requestUserLocation(true); // Proactively get user location silently
     updateCurrentTime();
-    smartInitialLoad(); // This is the new, enhanced loading function.
+    fetchAndRenderDepartures();
     setInterval(updateCurrentTime, 1000);
     setInterval(fetchAndRenderDepartures, 10000);
 }
