@@ -11,7 +11,19 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-app.use(cors());
+
+// More flexible CORS configuration for local development
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps, curl, or file://) in development
+    if (isDevelopment && (!origin || origin === 'null')) {
+      return callback(null, true);
+    }
+    callback(null, isDevelopment); // Allow any origin in dev, default behavior in prod
+  }
+};
+app.use(cors(corsOptions));
 
 const pool = createPool({
     connectionString: process.env.POSTGRES_URL,
@@ -104,6 +116,26 @@ app.get('/api/search', async (req, res) => {
     } catch (error) {
         console.error('Unified search query failed:', error);
         res.status(500).json({ error: 'Failed to perform search.' });
+    }
+});
+
+app.get('/api/route-info', async (req, res) => {
+    const { route_id } = req.query;
+    if (!route_id) { return res.status(400).json({ error: 'route_id is required.' }); }
+    try {
+        const { rows } = await pool.query(`
+            SELECT route_short_name, route_long_name, route_color, route_text_color
+            FROM routes
+            WHERE route_id = $1;
+        `, [route_id]);
+        if (rows.length > 0) {
+            res.json(rows[0]);
+        } else {
+            res.status(404).json({ error: 'Route not found.' });
+        }
+    } catch (error) {
+        console.error('Route info query failed:', error);
+        res.status(500).json({ error: 'Failed to fetch route info.' });
     }
 });
 

@@ -657,12 +657,9 @@ function renderSuggestions(results) {
 
             const params = new URLSearchParams({
                 route_id: route.route_id,
-                shape_id: route.shape_id,
                 headsign: route.trip_headsign,
-                route_short_name: route.route_short_name,
-                route_long_name: route.route_long_name,
-                route_color: route.route_color || '0284c7' // Pass route color with a fallback
-            });
+                shape_id: route.shape_id, // Still needed for drawing the map shape
+            }); 
 
             const link = document.createElement('a');
             link.href = `route.html?${params.toString()}`;
