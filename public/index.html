@@ -10,7 +10,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         html, body { height: 100%; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
-        .suggestion-item:hover { background-color: #bae6fd; }
         .pulse { animation: pulse-animation 2s infinite; }
         @keyframes pulse-animation {
             0% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0.7); }
@@ -18,11 +17,14 @@
             100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
         }
         .filter-btn-active { background-color: #2563eb !important; color: white !important; }
-        .dark .suggestion-item:hover { background-color: #1e40af; }
-        .child-stop { border-left: 2px solid #3b82f6; }
+        .child-stop { border-left: 3px solid #e5e7eb; }
+        .dark .child-stop { border-left-color: #4b5563; }
         .suggestion-selected { background-color: #2563eb !important; color: white !important; }
         .suggestion-selected .text-gray-500, .suggestion-selected .dark\:text-gray-400 { color: #dbeafe !important; }
         .suggestion-selected .walking-directions-btn svg { stroke: white !important; }
+        .suggestion-selected .selection-status { background-color: #1d4ed8; border-radius: 50%; width: 1.25rem; height: 1.25rem; display: flex; align-items: center; justify-content: center; }
+        .expand-icon { transition: transform 0.2s ease-in-out; }
+        .expand-icon.rotate-180 { transform: rotate(180deg); }
         .marker-selected { border: 2px solid #2563eb; box-shadow: 0 0 8px #2563eb; }
 
         .route-filter-active { background-color: #1d4ed8; color: white; border-color: #1d4ed8; }

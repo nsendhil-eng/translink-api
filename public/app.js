@@ -169,6 +169,10 @@ function plotStopsOnMap(stops, options = {}) {
     state.stopMarkers.forEach(marker => marker.remove());
     state.stopMarkers = [];
 
+    // Add nearby stops to the plot list if they exist
+    const allStopsToPlot = new Map(stops.map(s => [s.id, s]));
+    state.nearbyStopsCache.forEach(stop => { if (!allStopsToPlot.has(stop.id)) allStopsToPlot.set(stop.id, stop); });
+
     if (!state.map || stops.length === 0) return;
 
     const bounds = L.latLngBounds();
@@ -176,7 +180,7 @@ function plotStopsOnMap(stops, options = {}) {
         bounds.extend([state.cachedPosition.coords.latitude, state.cachedPosition.coords.longitude]);
     }
 
-    stops.forEach(stop => {
+    allStopsToPlot.forEach(stop => {
         const isSelected = state.selectedStops.some(s => s.code === stop.stop_code);
         const isHighlighted = stop.stop_code === highlightedStopCode;
         const isDeemphasized = highlightedStopCode && !isHighlighted;
@@ -229,11 +233,13 @@ function plotStopsOnMap(stops, options = {}) {
 }
 
 function initializeMapWithUserLocation() {
-    navigator.geolocation.getCurrentPosition(position => {
+    requestUserLocation().then(position => {
         initMap(position.coords.latitude, position.coords.longitude);
-    }, () => {
-        initMap(-27.4698, 153.0251);
-    }, { enableHighAccuracy: true });
+        findAndSelectNearestStops(position.coords.latitude, position.coords.longitude);
+    }).catch(() => {
+        initMap(-27.4698, 153.0251); // Fallback to Brisbane center
+        // Maybe show a message that location is needed for auto-selection
+    });
 }
 
 function formatBrisbaneTime(utcDateString) {
@@ -592,33 +598,48 @@ function renderSuggestions(results) {
     const groupedStops = groupStops(results.stops);
     state.suggestionsContainer.innerHTML = '';
     if (groupedStops.length > 0) {
+        // Modernized header with SVG close icon
         state.suggestionsContainer.innerHTML = `
-            <div class="flex justify-between items-center p-2 border-b dark:border-gray-700">
-                <p class="text-xs text-gray-500 dark:text-gray-400">Click a stop to add or remove it.</p>
-                <button id="close-suggestions-btn" class="text-red-500 hover:text-red-800 dark:hover:text-red-200 font-bold text-xl">close</button>
+            <div class="flex justify-between items-center p-3 border-b border-gray-200 dark:border-gray-700">
+                <p class="text-sm font-semibold text-gray-700 dark:text-gray-300">Search Results</p>
+                <button id="close-suggestions-btn" class="p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600" title="Close">
+                    <svg class="w-5 h-5 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
             </div>`;
         
         const stopsHeader = document.createElement('div');
-        stopsHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
+        stopsHeader.className = 'px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider';
         stopsHeader.textContent = 'Stops';
         state.suggestionsContainer.appendChild(stopsHeader);
 
         groupedStops.forEach(item => {
             const isSelected = (stopId) => state.selectedStops.some(s => s.id === stopId); // Use ID for checking.
-            const selectedClass = (stopId) => isSelected(stopId) ? 'suggestion-selected' : '';
+            const selectedClass = (stopId) => isSelected(stopId) ? 'suggestion-selected' : 'hover:bg-gray-100 dark:hover:bg-gray-700';
             const selectedText = (stopId) => isSelected(stopId) ? '' : 'hidden';
 
             if (item.is_parent) {
                 const groupEl = document.createElement('div');
-                groupEl.className = 'border-b dark:border-gray-700';
-                groupEl.innerHTML = `<div class="flex justify-between items-center cursor-pointer parent-toggle p-3"><div class="font-bold">${item.name}</div><div class="flex items-center"><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span><div class="text-blue-500 font-bold text-lg expand-icon ml-2">+</div></div></div><div class="pl-4 hidden child-container">${item.children.map(child => `<div class="p-2 cursor-pointer suggestion-item child-stop ${selectedClass(child.stop_code)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-semibold">${child.name}</div><div class="selection-status text-green-600 font-bold ${selectedText(child.stop_code)}">✓ Selected</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}</div>`;
+                groupEl.className = 'border-b border-gray-200 dark:border-gray-700';
+                groupEl.innerHTML = `
+                    <div class="flex justify-between items-center cursor-pointer parent-toggle p-3 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <div class="font-semibold text-gray-800 dark:text-gray-200">${item.name}</div>
+                        <div class="flex items-center gap-3">
+                            <span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span>
+                            <div class="expand-icon text-gray-400 dark:text-gray-500">
+                                <svg class="w-5 h-5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="pl-4 hidden child-container bg-gray-50 dark:bg-gray-800/50">
+                        ${item.children.map(child => `<div class="p-3 cursor-pointer suggestion-item child-stop border-t border-gray-200 dark:border-gray-700 ${selectedClass(child.id)}" data-id="${child.id}" data-code="${child.stop_code}"><div class="flex justify-between items-center"><div class="font-medium">${child.name}</div><div class="selection-status text-white font-bold ${selectedText(child.id)}">✓</div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(child.servicing_routes, child.route_directions)}</div></div>`).join('')}
+                    </div>`;
                 state.suggestionsContainer.appendChild(groupEl);
             } else {
                 const itemEl = document.createElement('div');
-                itemEl.className = `p-3 cursor-pointer suggestion-item border-b dark:border-gray-700 ${selectedClass(item.id)}`;
+                itemEl.className = `p-3 cursor-pointer suggestion-item border-b border-gray-200 dark:border-gray-700 ${selectedClass(item.id)}`;
                 itemEl.dataset.id = item.id;
                 itemEl.dataset.code = item.stop_code;
-                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-semibold">${item.name}</div><div class="flex items-center gap-2"><div class="selection-status text-green-600 font-bold ${selectedText(item.id)}">✓ Selected</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
+                itemEl.innerHTML = `<div class="flex justify-between items-center"><div class="font-medium">${item.name}</div><div class="flex items-center gap-3"><div class="selection-status text-white font-bold ${selectedText(item.id)}">✓</div><span class="walking-directions-btn" data-lat="${item.latitude}" data-lon="${item.longitude}" onclick="event.stopPropagation(); getWalkingDirections(${item.latitude}, ${item.longitude})">${WALKING_MAN_ICON}</span></div></div><div class="text-xs text-gray-500 dark:text-gray-400 mt-1">Routes: ${formatServicingRoutes(item.servicing_routes, item.route_directions)}</div>`;
                 state.suggestionsContainer.appendChild(itemEl);
             }
         });
@@ -626,12 +647,12 @@ function renderSuggestions(results) {
 
     if (results.routes && results.routes.length > 0) {
         const routesHeader = document.createElement('div');
-        routesHeader.className = 'p-2 bg-gray-100 dark:bg-gray-700 text-sm font-bold text-gray-600 dark:text-gray-300';
+        routesHeader.className = 'px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider';
         routesHeader.textContent = 'Routes';
         state.suggestionsContainer.appendChild(routesHeader);
 
         results.routes.forEach(route => {
-            const li = document.createElement('li');
+            const li = document.createElement('div');
             li.className = 'suggestion-item border-b dark:border-gray-700';
 
             const params = new URLSearchParams({
@@ -645,13 +666,13 @@ function renderSuggestions(results) {
 
             const link = document.createElement('a');
             link.href = `route.html?${params.toString()}`;
-            link.className = 'p-3 w-full flex justify-between items-center cursor-pointer';
+            link.className = 'p-3 w-full flex justify-between items-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700';
             link.innerHTML = `
                 <div>
-                    <div class="font-semibold">${route.route_short_name} ${route.trip_headsign}</div>
+                    <div class="font-medium">${route.route_short_name} ${route.trip_headsign}</div>
                     <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${route.route_long_name}</div>
                 </div>
-                <span class="text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300 font-medium me-2 px-2.5 py-0.5 rounded">Route</span>
+                <span class="text-xs bg-gray-200 text-gray-800 dark:bg-gray-600 dark:text-gray-300 font-medium me-2 px-2.5 py-0.5 rounded-md">Route</span>
             `;
             li.appendChild(link);
             state.suggestionsContainer.appendChild(li);
@@ -662,7 +683,7 @@ function renderSuggestions(results) {
         state.suggestionsWrapper.classList.remove('hidden');
         document.body.classList.add('suggestions-active');
     } else {
-        state.suggestionsContainer.innerHTML = `<div class="p-3 text-center text-gray-500">No stops found.</div>`;
+        state.suggestionsContainer.innerHTML = `<div class="p-4 text-center text-gray-500">No stops or routes found.</div>`;
         state.suggestionsWrapper.classList.remove('hidden');
         document.body.classList.add('suggestions-active');
     }
@@ -675,10 +696,10 @@ function updateSuggestionStates() {
     document.querySelectorAll('.suggestion-item[data-id]').forEach(item => {
         const id = item.dataset.id; // Use data-id for the lookup.
         if (isSelected(id)) {
-            item.classList.add('suggestion-selected');
+            item.classList.add('suggestion-selected', 'hover:bg-blue-700');
             item.querySelector('.selection-status')?.classList.remove('hidden');
         } else {
-            item.classList.remove('suggestion-selected');
+            item.classList.remove('suggestion-selected', 'hover:bg-blue-700');
             item.querySelector('.selection-status')?.classList.add('hidden');
         }
     });
@@ -749,12 +770,23 @@ function findNearestStop(stops) {
 
 function handleStopSelection(stop) {
     if (!stop) return;
-    const isSelected = state.selectedStops.some(s => s.id === stop.id);
 
+    // If a parent station is selected, select all its children instead.
+    if (stop.is_parent && stop.children && stop.children.length > 0) {
+        stop.children.forEach(childStop => {
+            const isChildSelected = state.selectedStops.some(s => s.id === childStop.id);
+            if (!isChildSelected) {
+                state.selectedStops.push({ id: childStop.id, code: childStop.stop_code, name: childStop.name });
+            }
+        });
+    } else {
+        // Handle individual stop selection
+    const isSelected = state.selectedStops.some(s => s.id === stop.id);
     if (!isSelected) {
         state.selectedStops.push({ id: stop.id, code: stop.stop_code, name: stop.name });
     } else {
         state.selectedStops = state.selectedStops.filter(s => s.id !== stop.id);
+    }
     }
 
     renderSelectedStopTags();
@@ -767,6 +799,66 @@ function handleStopSelection(stop) {
     plotStopsOnMap(stopObjects);
 
     updateSuggestionStates();
+}
+
+async function findAndSelectNearestStops(lat, lon) {
+    try {
+        const response = await fetch(`${state.findNearMeEndpoint}?lat=${lat}&lon=${lon}&radius=500`);
+        if (!response.ok) throw new Error('Failed to fetch nearby stops');
+        
+        const nearbyStops = await response.json();
+        if (nearbyStops.length === 0) return;
+        state.nearbyStopsCache = nearbyStops; // Cache the nearby stops
+        
+        let stopsToConsider = nearbyStops;
+        const favoriteRoutes = getCookie('favoriteRoutes');
+
+        if (favoriteRoutes && favoriteRoutes.length > 0) {
+            const favoriteRoutesSet = new Set(favoriteRoutes);
+            const relevantStops = nearbyStops.filter(stop => {
+                if (!stop.servicing_routes) return false;
+                const stopRoutes = stop.servicing_routes.split(', ');
+                return stopRoutes.some(route => favoriteRoutesSet.has(route));
+            });
+
+            if (relevantStops.length > 0) {
+                stopsToConsider = relevantStops;
+            }
+        }
+
+        // Plot all nearby stops first so they appear on the map
+        plotStopsOnMap(nearbyStops);
+
+        let inboundStop = null;
+        let outboundStop = null;
+        // Find the best candidates for inbound and outbound
+        for (const stop of stopsToConsider) {
+            if (!stop.route_directions) continue;
+
+            const directions = Object.values(stop.route_directions).flat();
+            const hasInbound = directions.includes('Inbound');
+            const hasOutbound = directions.includes('Outbound');
+            if (hasInbound && !hasOutbound && !inboundStop) {
+                inboundStop = stop;
+            }
+            if (hasOutbound && !hasInbound && !outboundStop) {
+                outboundStop = stop;
+            }
+        }
+
+        // Fallback: if we couldn't find clean in/out stops, pick the two closest.
+        if (!inboundStop && stopsToConsider.length > 0) inboundStop = stopsToConsider[0];
+        if (!outboundStop && stopsToConsider.length > 1) {
+            outboundStop = stopsToConsider.find(s => s.id !== inboundStop.id) || null;
+        }
+
+        // Select the identified stops
+        if (inboundStop) handleStopSelection(inboundStop);
+        if (outboundStop && outboundStop.id !== inboundStop.id) handleStopSelection(outboundStop);
+
+    } catch (error) {
+        console.error('Error finding and selecting nearest stops:', error);
+    }
 }
 
 function addEventListeners() {
@@ -795,6 +887,13 @@ function addEventListeners() {
         const parentToggle = e.target.closest('.parent-toggle');
         const closeBtn = e.target.closest('#close-suggestions-btn');
         const routeSuggestion = e.target.closest('.route-suggestion');
+
+        if (closeBtn) {
+            state.suggestionsWrapper.classList.add('hidden');
+            document.body.classList.remove('suggestions-active');
+            return;
+        }
+
         // Check if the item is a stop suggestion and not a route link
         const isStopItem = suggestionItem && suggestionItem.hasAttribute('data-id');
 
@@ -826,8 +925,8 @@ function addEventListeners() {
         if (parentToggle) {
             const childContainer = parentToggle.nextElementSibling;
             const icon = parentToggle.querySelector('.expand-icon');
+            icon.classList.toggle('rotate-180');
             childContainer.classList.toggle('hidden');
-            icon.textContent = childContainer.classList.contains('hidden') ? '+' : '−';
             // Re-calculate position after expanding/collapsing to handle height changes.
             positionSuggestions();
         }
@@ -836,7 +935,10 @@ function addEventListeners() {
     state.selectedStopsContainer.addEventListener('click', (e) => {
         if (e.target.matches('.remove-tag-btn')) {
             const stopIdToRemove = e.target.dataset.id;
-            state.selectedStops = state.selectedStops.filter(stop => stop.id !== stopIdToRemove);
+            // The dataset ID is a string, but the stop.id might be a number.
+            // Using a non-strict comparison `!=` handles this type difference.
+            // Alternatively, you could parse stopIdToRemove: `parseInt(stopIdToRemove, 10)`.
+            state.selectedStops = state.selectedStops.filter(stop => stop.id != stopIdToRemove);
             clearRouteDisplay();
             renderSelectedStopTags();
             updateAndRenderRouteFilters();
