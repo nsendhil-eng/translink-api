@@ -1146,6 +1146,7 @@ function requestUserLocation(isSilent = false) {
     return new Promise((resolve, reject) => {
     if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(position => {
+            setCookie('userLocation', JSON.stringify({lat: position.coords.latitude, lon: position.coords.longitude}), 1);
             state.cachedPosition = { coords: { latitude: position.coords.latitude, longitude: position.coords.longitude } };
             state.positionCacheTimestamp = Date.now();
             resolve(position);

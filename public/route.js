@@ -1,4 +1,15 @@
 document.addEventListener('DOMContentLoaded', () => {
+    function getCookie(name) {
+        const nameEQ = name + "=";
+        const ca = document.cookie.split(';');
+        for(let i=0; i < ca.length; i++) {
+            let c = ca[i];
+            while (c.charAt(0)==' ') c = c.substring(1,c.length);
+            if (c.indexOf(nameEQ) == 0) return JSON.parse(c.substring(nameEQ.length,c.length));
+        }
+        return null;
+    }
+
     const params = new URLSearchParams(window.location.search);
     const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
     const VERCEL_URL = 'https://transit.sn-app.space';
@@ -31,6 +42,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let routeStops = [];
     let routeInfo = {};
+    let userLocation = null;
+    let nearestStopMarker = null;
     const routeLayer = L.featureGroup().addTo(map);
 
     // --- NEW: Fetch all route data in parallel ---
@@ -70,14 +83,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // 4. Get user location
-        getUserLocationAndHighlightNearest();
+        const locationFromCookie = getCookie('userLocation');
+        if (locationFromCookie) {
+            userLocation = { lat: locationFromCookie.lat, lon: locationFromCookie.lon };
+            highlightNearestStop(userLocation.lat, userLocation.lon);
+        }
+
+        // Then, get a fresh location to update.
+        getFreshUserLocation();
 
     }).catch(err => {
         console.error('Failed to load route details:', err);
     });
 
+    // This function is now split into two parts.
+    // One that uses cookie data instantly, and one that gets a fresh location.
 
-    function getUserLocationAndHighlightNearest() {
+    function getFreshUserLocation() {
         if (!navigator.geolocation) {
             console.log('Geolocation is not supported by your browser.');
             return;
@@ -86,10 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
         mapStatus.textContent = 'Locating you...';
         mapStatus.classList.remove('hidden');
 
-        // Use a longer timeout to give the device more time to get a location,
-        // especially on mobile. maximumAge: 0 forces a fresh check.
-        // This combination is more reliable than a short timeout.
-        const geoOptions = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
+        const geoOptions = { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 };
 
         navigator.geolocation.getCurrentPosition(
             (position) => {
@@ -98,20 +117,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 mapStatus.classList.add('hidden');
 
-                const userMarker = L.marker([userLat, userLon]).addTo(map)
-                    .bindPopup('Your Location').openPopup();
+                // Update user location and re-highlight
+                userLocation = { lat: userLat, lon: userLon };
+                L.marker([userLat, userLon]).addTo(map).bindPopup('Your Location').openPopup();
 
                 if (routeStops.length > 0) {
                     highlightNearestStop(userLat, userLon);
-                } else {
-                    // If stops haven't loaded yet, wait for them
-                    // This is a fallback, usually the flow is correct
-                    const checkStops = setInterval(() => {
-                        if (routeStops.length > 0) {
-                            clearInterval(checkStops);
-                            highlightNearestStop(userLat, userLon);
-                        }
-                    }, 500);
                 }
             },
             () => {
@@ -141,14 +152,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="font-semibold text-base text-white">${nearestStop.name}</div>
                 </div>
             `;
+            
+            // If a marker already exists, remove it before adding a new one.
+            if (nearestStopMarker) {
+                nearestStopMarker.remove();
+            }
 
-            const nearestStopMarker = L.circleMarker([nearestStop.latitude, nearestStop.longitude], {
+            nearestStopMarker = L.circleMarker([nearestStop.latitude, nearestStop.longitude], {
                 radius: 10,
                 color: '#1d4ed8',
                 fillColor: '#2563eb',
                 fillOpacity: 1,
                 pane: 'markerPane' // Ensure it's in the right pane
-            }).bindPopup(popupContent, { className: 'nearest-stop-popup' }).addTo(map).openPopup();
+            }).bindPopup(popupContent, { className: 'nearest-stop-popup', offset: [0, -10] }).addTo(map).openPopup();
             
             // Add a pulse animation to the marker's element
             if (nearestStopMarker._path) {
