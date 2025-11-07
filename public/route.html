@@ -16,21 +16,24 @@
             70% { box-shadow: 0 0 0 15px rgba(29, 78, 216, 0); }
             100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
         }
+        /* Custom popup styles for the nearest stop marker */
+        .nearest-stop-popup .leaflet-popup-content-wrapper { background-color: #1f2937; color: #f9fafb; border-radius: 0.5rem; border: 1px solid #3b82f6; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.4); }
+        .nearest-stop-popup .leaflet-popup-content { margin: 0.75rem 1rem; }
+        .nearest-stop-popup .leaflet-popup-tip { background-color: #1f2937; }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-800 dark:text-gray-200 flex flex-col h-screen">
 
     <div class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
-        <header class="flex items-center gap-4 mb-4">
+        <header class="flex items-center gap-4">
             <a href="index.html" title="Go Back" class="flex-shrink-0 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-800 dark:text-gray-200 font-bold p-2 rounded-full transition duration-300">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
             </a>
-            <h1 id="route-heading" class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white text-center flex-grow">Loading Route...</h1>
         </header>
     </div>
 
-    <main class="flex-grow w-full max-w-7xl mx-auto px-4 pb-4 min-h-0">
-        <div id="map-container" class="relative h-full w-full rounded-lg shadow-lg overflow-hidden">
+    <main class="w-full max-w-7xl mx-auto px-4 flex-shrink-0">
+        <div id="map-container" class="relative h-[50vh] md:h-[60vh] w-full rounded-lg shadow-lg overflow-hidden">
             <div id="map" class="w-full h-full"></div>
             <div id="route-map-overlay" class="absolute top-2 left-2 bg-black bg-opacity-70 text-white p-2 rounded-md z-[1000] hidden flex items-center gap-3">
                 <span id="route-overlay-number" class="font-bold text-lg px-3 py-1 rounded"></span>
@@ -40,7 +43,7 @@
         </div>
     </main>
 
-    <footer id="departure-info-container" class="w-full max-w-7xl mx-auto p-4 flex-shrink-0">
+    <footer id="departure-info-container" class="w-full max-w-7xl mx-auto p-4 flex-grow min-h-0 overflow-y-auto">
         <!-- Departure info will be injected here -->
     </footer>
 

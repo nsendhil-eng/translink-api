@@ -14,13 +14,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const shapeId = params.get('shape_id');
     const headsign = params.get('headsign');
 
-    const routeHeading = document.getElementById('route-heading');
     const mapStatus = document.getElementById('map-status');
     const routeMapOverlay = document.getElementById('route-map-overlay');
     const departureInfoContainer = document.getElementById('departure-info-container');
 
     if (!routeId || !shapeId || !headsign) {
-        routeHeading.textContent = 'Error: Missing route information.';
         return;
     }
 
@@ -46,10 +44,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. Update UI with fetched info
         const routeColor = routeInfo.route_color || '0284c7';
-        routeHeading.innerHTML = `
-            <span class="font-black">${routeInfo.route_short_name}</span>
-            <span class="font-normal text-lg sm:text-xl ml-2">${routeInfo.route_long_name} to ${headsign}</span>
-        `;
         routeMapOverlay.querySelector('#route-overlay-number').textContent = routeInfo.route_short_name;
         routeMapOverlay.querySelector('#route-overlay-headsign').textContent = `to ${headsign}`;
         routeMapOverlay.querySelector('#route-overlay-number').style.backgroundColor = `#${routeColor}`;
@@ -67,10 +61,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // 3. Draw stop markers
         stops.forEach(stop => {
             const stopMarker = L.circleMarker([stop.latitude, stop.longitude], {
-                radius: 4,
-                color: '#3388ff',
-                fillColor: '#3388ff',
-                fillOpacity: 0.8
+                radius: 2,
+                color: '#ffffff',
+                fillColor: '#ffffff',
+                fillOpacity: 0.7
             }).bindPopup(`<b>${stop.name}</b>`);
             routeLayer.addLayer(stopMarker);
         });
@@ -80,7 +74,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     }).catch(err => {
         console.error('Failed to load route details:', err);
-        routeHeading.textContent = 'Error: Could not load route details.';
     });
 
 
@@ -93,8 +86,11 @@ document.addEventListener('DOMContentLoaded', () => {
         mapStatus.textContent = 'Locating you...';
         mapStatus.classList.remove('hidden');
 
-        // Use lower accuracy for a faster location lock on mobile
-        const geoOptions = { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 };
+        // Use a longer timeout to give the device more time to get a location,
+        // especially on mobile. maximumAge: 0 forces a fresh check.
+        // This combination is more reliable than a short timeout.
+        const geoOptions = { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 };
+
         navigator.geolocation.getCurrentPosition(
             (position) => {
                 const userLat = position.coords.latitude;
@@ -139,12 +135,20 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         if (nearestStop) {
+            const popupContent = `
+                <div class="text-center">
+                    <div class="text-xs font-bold text-blue-400 mb-1 uppercase tracking-wider">Nearest Stop</div>
+                    <div class="font-semibold text-base text-white">${nearestStop.name}</div>
+                </div>
+            `;
+
             const nearestStopMarker = L.circleMarker([nearestStop.latitude, nearestStop.longitude], {
                 radius: 10,
                 color: '#1d4ed8',
                 fillColor: '#2563eb',
-                fillOpacity: 1
-            }).bindPopup(`<b>Nearest Stop:</b><br>${nearestStop.name}`).addTo(map).openPopup();
+                fillOpacity: 1,
+                pane: 'markerPane' // Ensure it's in the right pane
+            }).bindPopup(popupContent, { className: 'nearest-stop-popup' }).addTo(map).openPopup();
             
             // Add a pulse animation to the marker's element
             if (nearestStopMarker._path) {
@@ -210,7 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
             departureInfoContainer.innerHTML = `
                 <div class="bg-gray-800 p-4 rounded-lg shadow-md space-y-6">
                     <div class="text-center">
-                        <h3 class="text-lg font-bold text-white">Next Departure from ${stop.name}</h3>
+                        <h3 class="text-lg font-bold text-white">Closest stop next departure from ${stop.name}</h3>
                         <p class="text-3xl font-bold text-blue-400 my-2">${dueInText}</p>
                         <p class="text-sm text-gray-300">Scheduled: ${scheduledTime} ${expectedHTML}</p>
                     </div>
