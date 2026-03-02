@@ -196,7 +196,9 @@ app.get('/api/v2/search', async (req, res) => {
         const [stopsResult, routesResult, suburbRoutesResult] = await Promise.all([stopsPromise, routesPromise, suburbRoutesPromise]);
 
         const allRoutes = [...routesResult.rows, ...suburbRoutesResult.rows];
-        const uniqueRoutes = Array.from(new Map(allRoutes.map(route => [`${route.route_id}-${route.direction_id}`, route])).values());
+        // Dedup on short name + direction — collapses multiple route_ids with the same
+        // public-facing number (e.g. peak/off-peak variants) into one result per direction.
+        const uniqueRoutes = Array.from(new Map(allRoutes.map(route => [`${route.route_short_name}-${route.direction_id}`, route])).values());
 
         res.json({ stops: stopsResult.rows, routes: uniqueRoutes });
 
