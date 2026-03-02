@@ -107,6 +107,105 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
+// --- MOBILE SEARCH ENDPOINT (v2) ---
+// Purpose-built for iOS/Android apps. Key differences from /api/search:
+//   - Returns exactly one result per direction (DISTINCT ON direction_id), not per headsign.
+//     This prevents train/ferry lines returning dozens of rows (one per terminus variant).
+//   - Picks the headsign from the longest trip in each direction (true terminus, not a short-runner).
+//   - Includes direction_id, route_type, and route_text_color in the response.
+app.get('/api/v2/search', async (req, res) => {
+    const { q } = req.query;
+    if (!q || q.length < 2) { return res.json({ stops: [], routes: [] }); }
+
+    try {
+        const searchQuery = `%${q}%`;
+
+        // Stops — identical logic to v1 (parent station expansion + dedup)
+        const initialStopsResult = await pool.query(`
+            WITH initial_matches AS (
+                SELECT stop_id, parent_station
+                FROM stops
+                WHERE stop_name ILIKE $1 OR COALESCE(stop_desc, '') ILIKE $1
+                LIMIT 20
+            )
+            SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+                parent.stop_name AS parent_station_name,
+                ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+            FROM stops s
+            LEFT JOIN stops parent ON s.parent_station = parent.stop_id
+            WHERE s.stop_id IN (SELECT stop_id FROM initial_matches)
+               OR s.parent_station IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '')
+               OR s.stop_id IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '');
+        `, [searchQuery]);
+
+        const uniqueStops = Array.from(new Map(initialStopsResult.rows.map(stop => [stop.id, stop])).values());
+        const stopsPromise = Promise.resolve({ rows: uniqueStops });
+
+        // Routes — one row per direction, headsign from longest trip (= true terminus)
+        const routesPromise = pool.query(`
+            SELECT
+                r.route_id,
+                r.route_short_name,
+                r.route_long_name,
+                r.route_color,
+                r.route_text_color,
+                r.route_type,
+                t.trip_headsign,
+                t.direction_id,
+                t.shape_id
+            FROM routes r
+            JOIN (
+                SELECT DISTINCT ON (route_id, direction_id)
+                    route_id, trip_headsign, direction_id, shape_id
+                FROM trips tr
+                JOIN (
+                    SELECT trip_id, COUNT(*) AS stop_count
+                    FROM stop_times
+                    GROUP BY trip_id
+                ) sc ON tr.trip_id = sc.trip_id
+                ORDER BY route_id, direction_id, sc.stop_count DESC
+            ) t ON r.route_id = t.route_id
+            WHERE r.route_short_name ILIKE $1 OR r.route_long_name ILIKE $1
+            ORDER BY r.route_short_name, t.direction_id
+            LIMIT 20;
+        `, [searchQuery]);
+
+        // Suburb routes — same direction-based distinct
+        const suburbRoutesPromise = pool.query(`
+            SELECT
+                r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color, r.route_type,
+                t.trip_headsign, t.direction_id, t.shape_id
+            FROM routes r
+            JOIN (
+                SELECT DISTINCT ON (route_id, direction_id)
+                    route_id, trip_headsign, direction_id, shape_id
+                FROM trips tr
+                JOIN (
+                    SELECT trip_id, COUNT(*) AS stop_count
+                    FROM stop_times
+                    GROUP BY trip_id
+                ) sc ON tr.trip_id = sc.trip_id
+                ORDER BY route_id, direction_id, sc.stop_count DESC
+            ) t ON r.route_id = t.route_id
+            WHERE r.route_id IN (
+                SELECT DISTINCT route_id FROM suburb_routes WHERE suburb ILIKE $1
+            )
+            LIMIT 20;
+        `, [searchQuery]);
+
+        const [stopsResult, routesResult, suburbRoutesResult] = await Promise.all([stopsPromise, routesPromise, suburbRoutesPromise]);
+
+        const allRoutes = [...routesResult.rows, ...suburbRoutesResult.rows];
+        const uniqueRoutes = Array.from(new Map(allRoutes.map(route => [`${route.route_id}-${route.direction_id}`, route])).values());
+
+        res.json({ stops: stopsResult.rows, routes: uniqueRoutes });
+
+    } catch (error) {
+        console.error('v2 search query failed:', error);
+        res.status(500).json({ error: 'Failed to perform search.' });
+    }
+});
+
 app.get('/api/stops-for-route', async (req, res) => {
     const { route_id, headsign } = req.query;
     if (!route_id || !headsign) { return res.status(400).json({ error: 'route_id and headsign are required.' }); }
