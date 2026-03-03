@@ -220,8 +220,12 @@ async function main() {
     console.log('✅ Suburb to routes mapping created.');
 
     console.log('Creating indexes for faster queries...');
+    await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
     await client.query('CREATE INDEX IF NOT EXISTS stops_location_idx ON stops USING GIST (location);');
     await client.query('CREATE INDEX IF NOT EXISTS stops_suburb_idx ON stops (suburb);');
+    await client.query('CREATE INDEX IF NOT EXISTS stops_name_trgm_idx ON stops USING GIN (stop_name gin_trgm_ops);');
+    await client.query('CREATE INDEX IF NOT EXISTS stops_parent_station_idx ON stops (parent_station);');
+    await client.query('CREATE INDEX IF NOT EXISTS stops_stop_code_idx ON stops (stop_code);');
     await client.query('CREATE INDEX IF NOT EXISTS stop_times_trip_id_idx ON stop_times (trip_id);');
     await client.query('CREATE INDEX IF NOT EXISTS stop_times_stop_id_idx ON stop_times (stop_id);');
     await client.query('CREATE INDEX IF NOT EXISTS trips_route_id_idx ON trips (route_id);');
