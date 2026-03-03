@@ -480,11 +480,27 @@ app.get('/api/departures', async (req, res) => {
             };
         });
         
-        const upcomingDepartures = enrichedDepartures
+        const sorted = enrichedDepartures
             .filter(dep => dep.secondsUntilDeparture > -120)
-            .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture)
-            .slice(0, 15);
-        res.json(upcomingDepartures);
+            .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
+
+        const perStop = parseInt(req.query.per_stop, 10) || null;
+        if (perStop) {
+            // Per-stop mode: guarantees every stop gets at least one departure,
+            // even for infrequent platforms with service hours away.
+            const countPerStop = new Map();
+            const result = [];
+            for (const dep of sorted) {
+                const n = countPerStop.get(dep.stop_id) ?? 0;
+                if (n < perStop) {
+                    result.push(dep);
+                    countPerStop.set(dep.stop_id, n + 1);
+                }
+            }
+            res.json(result);
+        } else {
+            res.json(sorted.slice(0, 15));
+        }
     } catch (error) {
         console.error('An error occurred in /api/departures:', error);
         res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });
