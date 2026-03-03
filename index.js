@@ -127,8 +127,8 @@ app.get('/api/v2/search', async (req, res) => {
 
         const stopsQueryParams = hasLocation ? [searchQuery, lon, lat] : [searchQuery];
         const distanceSelect = hasLocation
-            ? `ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography)::numeric, 0) AS distance_m`
-            : `NULL::numeric AS distance_m`;
+            ? `ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography))::int AS distance_m`
+            : `NULL::int AS distance_m`;
         const orderBy = hasLocation ? `ORDER BY distance_m ASC NULLS LAST` : `ORDER BY s.stop_name`;
 
         const stopsPromise = pool.query(`
