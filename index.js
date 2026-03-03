@@ -352,7 +352,7 @@ app.get('/api/stops-near-me', async (req, res) => {
     const typeFilter = types ? types.split(',').map(Number) : null;
     let query = `
       SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
-             parent_stop.stop_name AS parent_station_name, ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) as distance,
+             parent_stop.stop_name AS parent_station_name, ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography)::numeric)::int AS distance_m,
              ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
       FROM stops AS s
       LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
