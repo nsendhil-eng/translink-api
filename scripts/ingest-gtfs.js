@@ -11,7 +11,7 @@ const BATCH_SIZE = 500;
 
 const createTablesQuery = `
   -- NEW: Drop existing tables to ensure a fresh start
-  DROP TABLE IF EXISTS agency, routes, calendar, calendar_dates, trips, stops, stop_times, shapes, route_shapes, suburb_routes;
+  DROP TABLE IF EXISTS agency, routes, calendar, calendar_dates, trips, stops, stop_times, shapes, route_shapes, suburb_routes, route_directions_precomputed;
 
   CREATE TABLE IF NOT EXISTS agency (
     agency_name VARCHAR(255),
@@ -81,6 +81,12 @@ const createTablesQuery = `
   CREATE TABLE IF NOT EXISTS suburb_routes (
     suburb TEXT,
     route_id TEXT
+  );
+  CREATE TABLE IF NOT EXISTS route_directions_precomputed (
+    route_id VARCHAR(255),
+    direction_id INT,
+    trip_headsign VARCHAR(255),
+    shape_id VARCHAR(255)
   );
 `;
 
@@ -219,6 +225,21 @@ async function main() {
     `);
     console.log('✅ Suburb to routes mapping created.');
 
+    console.log('Pre-computing route directions (longest trip per direction)...');
+    await client.query(`
+        INSERT INTO route_directions_precomputed (route_id, direction_id, trip_headsign, shape_id)
+        SELECT DISTINCT ON (tr.route_id, tr.direction_id)
+            tr.route_id, tr.direction_id, tr.trip_headsign, tr.shape_id
+        FROM trips tr
+        JOIN (
+            SELECT trip_id, COUNT(*) AS stop_count
+            FROM stop_times
+            GROUP BY trip_id
+        ) sc ON tr.trip_id = sc.trip_id
+        ORDER BY tr.route_id, tr.direction_id, sc.stop_count DESC;
+    `);
+    console.log('✅ Route directions pre-computed.');
+
     console.log('Creating indexes for faster queries...');
     await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
     await client.query('CREATE INDEX IF NOT EXISTS stops_location_idx ON stops USING GIST (location);');
@@ -233,6 +254,8 @@ async function main() {
     await client.query('CREATE INDEX IF NOT EXISTS route_shapes_shape_id_idx ON route_shapes (shape_id);');
     await client.query('CREATE INDEX IF NOT EXISTS suburb_routes_suburb_idx ON suburb_routes (suburb);');
     await client.query('CREATE INDEX IF NOT EXISTS calendar_dates_service_id_idx ON calendar_dates (service_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS route_directions_route_id_idx ON route_directions_precomputed (route_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS stop_times_trip_sequence_idx ON stop_times (trip_id, stop_sequence);');
     console.log('✅ Indexes are ready.');
 
     console.log('\n🎉 GTFS data ingestion complete!');

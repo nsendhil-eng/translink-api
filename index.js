@@ -182,17 +182,7 @@ app.get('/api/v2/search', async (req, res) => {
                 t.direction_id,
                 t.shape_id
             FROM routes r
-            JOIN (
-                SELECT DISTINCT ON (route_id, direction_id)
-                    route_id, trip_headsign, direction_id, shape_id
-                FROM trips tr
-                JOIN (
-                    SELECT trip_id, COUNT(*) AS stop_count
-                    FROM stop_times
-                    GROUP BY trip_id
-                ) sc ON tr.trip_id = sc.trip_id
-                ORDER BY route_id, direction_id, sc.stop_count DESC
-            ) t ON r.route_id = t.route_id
+            JOIN route_directions_precomputed t ON r.route_id = t.route_id
             WHERE r.route_short_name ILIKE $1 OR r.route_long_name ILIKE $1
             ORDER BY r.route_short_name, t.direction_id
             LIMIT 20;
@@ -204,17 +194,7 @@ app.get('/api/v2/search', async (req, res) => {
                 r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color, r.route_type,
                 t.trip_headsign, t.direction_id, t.shape_id
             FROM routes r
-            JOIN (
-                SELECT DISTINCT ON (route_id, direction_id)
-                    route_id, trip_headsign, direction_id, shape_id
-                FROM trips tr
-                JOIN (
-                    SELECT trip_id, COUNT(*) AS stop_count
-                    FROM stop_times
-                    GROUP BY trip_id
-                ) sc ON tr.trip_id = sc.trip_id
-                ORDER BY route_id, direction_id, sc.stop_count DESC
-            ) t ON r.route_id = t.route_id
+            JOIN route_directions_precomputed t ON r.route_id = t.route_id
             WHERE r.route_id IN (
                 SELECT DISTINCT route_id FROM suburb_routes WHERE suburb ILIKE $1
             )
