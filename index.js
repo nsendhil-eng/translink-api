@@ -120,26 +120,54 @@ app.get('/api/v2/search', async (req, res) => {
     try {
         const searchQuery = `%${q}%`;
 
-        // Stops — identical logic to v1 (parent station expansion + dedup)
-        const initialStopsResult = await pool.query(`
+        // Stops — platform expansion + stop_code filter + optional distance ordering
+        const lat = parseFloat(req.query.lat);
+        const lon = parseFloat(req.query.lon);
+        const hasLocation = !isNaN(lat) && !isNaN(lon);
+
+        const stopsQueryParams = hasLocation ? [searchQuery, lon, lat] : [searchQuery];
+        const distanceSelect = hasLocation
+            ? `ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography)::numeric, 0) AS distance_m`
+            : `NULL::numeric AS distance_m`;
+        const orderBy = hasLocation ? `ORDER BY distance_m ASC NULLS LAST` : `ORDER BY s.stop_name`;
+
+        const stopsPromise = pool.query(`
             WITH initial_matches AS (
                 SELECT stop_id, parent_station
                 FROM stops
                 WHERE stop_name ILIKE $1 OR COALESCE(stop_desc, '') ILIKE $1
-                LIMIT 20
+                LIMIT 50
+            ),
+            expanded AS (
+                SELECT stop_id FROM initial_matches
+                WHERE parent_station IS NULL OR parent_station = ''
+                UNION
+                SELECT s.stop_id FROM stops s
+                WHERE s.parent_station IN (
+                    SELECT stop_id FROM initial_matches
+                    WHERE parent_station IS NULL OR parent_station = ''
+                )
+                UNION
+                SELECT s.stop_id FROM stops s
+                WHERE s.parent_station IN (
+                    SELECT parent_station FROM initial_matches
+                    WHERE parent_station IS NOT NULL AND parent_station != ''
+                )
             )
-            SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+            SELECT
+                s.stop_id AS id, s.stop_name AS name, s.stop_code,
+                s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
                 parent.stop_name AS parent_station_name,
-                ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+                ST_Y(s.location::geometry) AS latitude,
+                ST_X(s.location::geometry) AS longitude,
+                ${distanceSelect}
             FROM stops s
             LEFT JOIN stops parent ON s.parent_station = parent.stop_id
-            WHERE s.stop_id IN (SELECT stop_id FROM initial_matches)
-               OR s.parent_station IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '')
-               OR s.stop_id IN (SELECT parent_station FROM initial_matches WHERE parent_station IS NOT NULL AND parent_station != '');
-        `, [searchQuery]);
-
-        const uniqueStops = Array.from(new Map(initialStopsResult.rows.map(stop => [stop.id, stop])).values());
-        const stopsPromise = Promise.resolve({ rows: uniqueStops });
+            WHERE s.stop_id IN (SELECT stop_id FROM expanded)
+              AND s.stop_code IS NOT NULL AND s.stop_code != ''
+            ${orderBy}
+            LIMIT 20;
+        `, stopsQueryParams);
 
         // Routes — one row per direction, headsign from longest trip (= true terminus)
         const routesPromise = pool.query(`
@@ -201,6 +229,7 @@ app.get('/api/v2/search', async (req, res) => {
         const uniqueRoutes = Array.from(new Map(allRoutes.map(route => [`${route.route_short_name}-${route.direction_id}`, route])).values());
 
         res.json({ stops: stopsResult.rows, routes: uniqueRoutes });
+
 
     } catch (error) {
         console.error('v2 search query failed:', error);
