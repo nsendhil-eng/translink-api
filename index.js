@@ -464,15 +464,15 @@ app.get('/api/departures', async (req, res) => {
             .filter(dep => dep.secondsUntilDeparture > -120)
             .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
 
-        // Filter to trips that actually call at the get-off stop.
-        // Handles express services that skip certain stops.
+        // Filter to trips that actually call at the get-off stop(s).
+        // Accepts a comma-separated list of stop_ids to support multi-platform stations.
         if (req.query.get_off_stop) {
-            const getOffStopId = req.query.get_off_stop;
+            const getOffStopIds = req.query.get_off_stop.split(',').map(s => s.trim()).filter(Boolean);
             const tripIds = [...new Set(sorted.map(d => d.trip_id))];
-            if (tripIds.length > 0) {
+            if (tripIds.length > 0 && getOffStopIds.length > 0) {
                 const { rows: validRows } = await pool.query(
-                    'SELECT DISTINCT trip_id FROM stop_times WHERE trip_id = ANY($1) AND stop_id = $2',
-                    [tripIds, getOffStopId]
+                    'SELECT DISTINCT trip_id FROM stop_times WHERE trip_id = ANY($1) AND stop_id = ANY($2)',
+                    [tripIds, getOffStopIds]
                 );
                 const validTripIds = new Set(validRows.map(r => r.trip_id));
                 sorted = sorted.filter(d => validTripIds.has(d.trip_id));
