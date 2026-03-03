@@ -460,9 +460,24 @@ app.get('/api/departures', async (req, res) => {
             };
         });
         
-        const sorted = enrichedDepartures
+        let sorted = enrichedDepartures
             .filter(dep => dep.secondsUntilDeparture > -120)
             .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
+
+        // Filter to trips that actually call at the get-off stop.
+        // Handles express services that skip certain stops.
+        if (req.query.get_off_stop) {
+            const getOffStopId = req.query.get_off_stop;
+            const tripIds = [...new Set(sorted.map(d => d.trip_id))];
+            if (tripIds.length > 0) {
+                const { rows: validRows } = await pool.query(
+                    'SELECT DISTINCT trip_id FROM stop_times WHERE trip_id = ANY($1) AND stop_id = $2',
+                    [tripIds, getOffStopId]
+                );
+                const validTripIds = new Set(validRows.map(r => r.trip_id));
+                sorted = sorted.filter(d => validTripIds.has(d.trip_id));
+            }
+        }
 
         const perStop = parseInt(req.query.per_stop, 10) || null;
         if (perStop) {
