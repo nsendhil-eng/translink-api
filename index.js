@@ -653,6 +653,151 @@ app.get('/api/trip-details', async (req, res) => {
 });
 
 
+// --- STOP LIVE: shapes + vehicle positions for the next 2 departures at a stop ---
+// GET /api/stop-live?stop_ids=id1,id2
+// Returns up to 2 upcoming trips, each with split shape (before/after stop) and GTFS-RT vehicle position.
+app.get('/api/stop-live', async (req, res) => {
+    const stopIdsParam = req.query.stop_ids || req.query.stop_id;
+    if (!stopIdsParam) return res.status(400).json({ error: 'stop_ids is required.' });
+    const stopIds = stopIdsParam.split(',').map(s => s.trim()).filter(Boolean);
+
+    try {
+        const now = new Date();
+        const timeZone = 'Australia/Brisbane';
+        const parts = new Intl.DateTimeFormat('en-AU', {
+            timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long'
+        }).formatToParts(now);
+        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
+        const dayOfWeek = findPart('weekday').toLowerCase();
+        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
+
+        // Fetch all of today's trips for these stops (time filter done in JS to handle > 24h GTFS times)
+        const { rows: allRows } = await pool.query(`
+            SELECT
+                st.trip_id, st.stop_id, st.stop_sequence, st.departure_time,
+                t.shape_id,
+                r.route_short_name, r.route_color, r.route_type,
+                ST_Y(s.location::geometry) AS stop_lat,
+                ST_X(s.location::geometry) AS stop_lon
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            JOIN routes r ON t.route_id = r.route_id
+            JOIN stops s ON st.stop_id = s.stop_id
+            WHERE st.stop_id = ANY($1)
+            AND t.service_id IN (
+                (SELECT service_id FROM calendar
+                 WHERE start_date <= $2 AND end_date >= $2 AND ${dayOfWeek} = 1)
+                EXCEPT
+                (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 2)
+                UNION
+                (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 1)
+            )
+            ORDER BY st.departure_time
+        `, [stopIds, dateString]);
+
+        // Convert GTFS departure_time to UTC, filter to upcoming, take first 2
+        const year = parseInt(dateString.substring(0, 4));
+        const month = parseInt(dateString.substring(4, 6)) - 1;
+        const day = parseInt(dateString.substring(6, 8));
+        const synchronizedNow = new Date();
+        const upcoming = allRows
+            .map(row => {
+                const [h, m, sec] = row.departure_time.split(':').map(Number);
+                const scheduledUtc = new Date(Date.UTC(year, month, day));
+                scheduledUtc.setUTCHours(h - 10, m, sec); // Brisbane = UTC+10
+                return { ...row, secondsUntil: Math.round((scheduledUtc - synchronizedNow) / 1000) };
+            })
+            .filter(row => row.secondsUntil > -60)
+            .slice(0, 2);
+
+        if (upcoming.length === 0) return res.json({ trips: [] });
+
+        // Refresh vehicle positions cache if stale
+        if (!vehiclePositionsCache || Date.now() - vehiclePositionsCacheTime > 4000) {
+            const r = await fetch(VEHICLE_POSITIONS_URL, fetchOptions);
+            const buf = await r.arrayBuffer();
+            vehiclePositionsCache = gtfsRealtime.decode(Buffer.from(buf));
+            vehiclePositionsCacheTime = Date.now();
+        }
+
+        // Build trip_id → vehicle map from GTFS-RT
+        const vehicleByTrip = {};
+        for (const entity of vehiclePositionsCache.entity) {
+            const v = entity.vehicle;
+            if (!v?.position || !v?.trip?.tripId) continue;
+            vehicleByTrip[v.trip.tripId] = {
+                lat: v.position.latitude,
+                lon: v.position.longitude,
+                bearing: v.position.bearing ?? 0,
+                currentStopSequence: v.currentStopSequence ?? 0,
+            };
+        }
+
+        // For each upcoming trip: get shape, split at stop, attach vehicle
+        const trips = await Promise.all(upcoming.map(async (row) => {
+            // Get simplified shape as GeoJSON from route_shapes
+            const { rows: shapeRows } = await pool.query(`
+                SELECT ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00008)) AS geojson
+                FROM route_shapes
+                WHERE shape_id = $1
+            `, [row.shape_id]);
+
+            let shapeBefore = [];
+            let shapeAfter = [];
+
+            if (shapeRows.length > 0) {
+                try {
+                    const geojson = JSON.parse(shapeRows[0].geojson);
+                    // GeoJSON is [lon, lat] — swap to [lat, lon] for the app
+                    const toLatLon = c => [c[1], c[0]];
+                    let points = [];
+                    if (geojson.type === 'LineString') {
+                        points = geojson.coordinates.map(toLatLon);
+                    } else if (geojson.type === 'MultiLineString') {
+                        points = geojson.coordinates.flat().map(toLatLon);
+                    }
+
+                    // Find shape point closest to the stop → split index
+                    const stopLat = parseFloat(row.stop_lat);
+                    const stopLon = parseFloat(row.stop_lon);
+                    let splitIdx = 0;
+                    let minDist = Infinity;
+                    for (let i = 0; i < points.length; i++) {
+                        const d = haversineMeters(stopLat, stopLon, points[i][0], points[i][1]);
+                        if (d < minDist) { minDist = d; splitIdx = i; }
+                    }
+                    shapeBefore = points.slice(0, splitIdx + 1);
+                    shapeAfter = points.slice(splitIdx);
+                } catch { /* leave empty */ }
+            }
+
+            const liveVehicle = vehicleByTrip[row.trip_id] ?? null;
+            const hasPassed = liveVehicle
+                ? liveVehicle.currentStopSequence > row.stop_sequence
+                : false;
+
+            return {
+                tripId: row.trip_id,
+                routeShortName: row.route_short_name ?? '',
+                routeColor: row.route_color ?? null,
+                shapeBefore,
+                shapeAfter,
+                vehicle: liveVehicle ? {
+                    lat: liveVehicle.lat,
+                    lon: liveVehicle.lon,
+                    bearing: liveVehicle.bearing,
+                } : null,
+                hasPassed,
+            };
+        }));
+
+        res.json({ trips });
+    } catch (error) {
+        console.error('stop-live failed:', error);
+        res.json({ trips: [] });
+    }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
