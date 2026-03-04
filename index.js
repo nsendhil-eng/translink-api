@@ -18,7 +18,21 @@ const pool = createPool({
 });
 
 const REALTIME_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates';
+const VEHICLE_POSITIONS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions';
 const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
+
+// Cache vehicle positions for 4 s so rapid polls don't hammer Translink
+let vehiclePositionsCache = null;
+let vehiclePositionsCacheTime = 0;
+
+function haversineMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
 
 // Load the GTFS-realtime schema once when the server starts
 let gtfsRealtime;
@@ -234,6 +248,74 @@ app.get('/api/stops-for-route', async (req, res) => {
     } catch (error) {
         console.error('Stops for route query failed:', error);
         res.status(500).json({ error: 'Failed to fetch stops for the route.' });
+    }
+});
+
+app.get('/api/vehicles-near-me', async (req, res) => {
+    const lat = parseFloat(req.query.lat);
+    const lon = parseFloat(req.query.lon);
+    const radius = parseFloat(req.query.radius) || 1000;
+    if (isNaN(lat) || isNaN(lon)) return res.status(400).json({ error: 'lat and lon are required.' });
+
+    try {
+        // Refresh the feed at most once per 4 s
+        if (!vehiclePositionsCache || Date.now() - vehiclePositionsCacheTime > 4000) {
+            const r = await fetch(VEHICLE_POSITIONS_URL, fetchOptions);
+            const buf = await r.arrayBuffer();
+            vehiclePositionsCache = gtfsRealtime.decode(Buffer.from(buf));
+            vehiclePositionsCacheTime = Date.now();
+        }
+
+        // Filter to vehicles within radius
+        const nearby = [];
+        for (const entity of vehiclePositionsCache.entity) {
+            const v = entity.vehicle;
+            if (!v?.position) continue;
+            const vLat = v.position.latitude;
+            const vLon = v.position.longitude;
+            if (typeof vLat !== 'number' || typeof vLon !== 'number') continue;
+            if (haversineMeters(lat, lon, vLat, vLon) > radius) continue;
+            nearby.push({
+                vehicleId: entity.id,
+                lat: vLat,
+                lon: vLon,
+                bearing: v.position.bearing ?? 0,
+                tripId: v.trip?.tripId ?? null,
+            });
+        }
+
+        if (nearby.length === 0) return res.json([]);
+
+        // Enrich with route info from the DB
+        const tripIds = nearby.map(v => v.tripId).filter(Boolean);
+        const routeByTrip = {};
+        if (tripIds.length > 0) {
+            const { rows } = await pool.query(`
+                SELECT t.trip_id, r.route_short_name, r.route_color, r.route_type
+                FROM trips t
+                JOIN routes r ON r.route_id = t.route_id
+                WHERE t.trip_id = ANY($1)
+            `, [tripIds]);
+            for (const row of rows) routeByTrip[row.trip_id] = row;
+        }
+
+        const result = nearby.map(v => {
+            const route = (v.tripId && routeByTrip[v.tripId]) || {};
+            return {
+                vehicleId: v.vehicleId,
+                lat: v.lat,
+                lon: v.lon,
+                bearing: v.bearing,
+                routeShortName: route.route_short_name ?? '',
+                routeColor: route.route_color ?? null,
+                routeType: route.route_type ?? 3,
+            };
+        });
+
+        res.json(result);
+    } catch (error) {
+        console.error('vehicles-near-me failed:', error);
+        res.json([]);
     }
 });
 
