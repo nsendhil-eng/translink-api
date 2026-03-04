@@ -237,6 +237,47 @@ app.get('/api/stops-for-route', async (req, res) => {
     }
 });
 
+app.get('/api/shapes-near-me', async (req, res) => {
+    const lat = parseFloat(req.query.lat);
+    const lon = parseFloat(req.query.lon);
+    if (isNaN(lat) || isNaN(lon)) return res.status(400).json({ error: 'lat and lon are required.' });
+    const delta = 0.018; // ~2km bounding box in degrees
+    try {
+        const { rows } = await pool.query(`
+            SELECT DISTINCT ON (r.route_id)
+                r.route_id,
+                r.route_color,
+                ST_AsGeoJSON(ST_Simplify(rs.shape::geometry, 0.00008)) AS geojson
+            FROM route_shapes rs
+            JOIN trips t ON t.shape_id = rs.shape_id
+            JOIN routes r ON r.route_id = t.route_id
+            WHERE rs.shape && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+            ORDER BY r.route_id
+            LIMIT 30
+        `, [lon - delta, lat - delta, lon + delta, lat + delta]);
+
+        const result = rows.flatMap(row => {
+            try {
+                const geojson = JSON.parse(row.geojson);
+                const toLatLon = c => [c[1], c[0]]; // GeoJSON is [lon,lat] → swap to [lat,lon]
+                let points = [];
+                if (geojson.type === 'LineString') {
+                    points = geojson.coordinates.map(toLatLon);
+                } else if (geojson.type === 'MultiLineString') {
+                    points = geojson.coordinates.flat().map(toLatLon);
+                }
+                if (points.length < 2) return [];
+                return [{ routeId: row.route_id, routeColor: row.route_color, points }];
+            } catch { return []; }
+        });
+
+        res.json(result);
+    } catch (error) {
+        console.error('shapes-near-me failed:', error);
+        res.json([]);
+    }
+});
+
 app.get('/api/route-shape', async (req, res) => {
     const { shape_id } = req.query;
     if (!shape_id) { return res.status(400).json({ error: 'shape_id is required.' }); }
