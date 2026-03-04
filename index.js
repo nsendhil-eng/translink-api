@@ -422,17 +422,26 @@ app.get('/api/departures', async (req, res) => {
 
             const stopTimeUpdates = liveDataMap.get(s.trip_id);
             let expectedUtc = scheduledUtc.toISOString();
+            let isDelayed = false;
 
             if (stopTimeUpdates) {
                 const stopUpdate = stopTimeUpdates.find(stu => stu.stopSequence === s.stop_sequence);
-                if (stopUpdate && stopUpdate.departure && stopUpdate.departure.time) {
-                    // The 'time' object from protobufjs is a Long.js object.
-                    // We must convert it to a standard JavaScript number before using it.
-                    let departureTimestamp = stopUpdate.departure.time;
-                    if (typeof departureTimestamp === 'object' && typeof departureTimestamp.toNumber === 'function') {
-                        departureTimestamp = departureTimestamp.toNumber();
+                if (stopUpdate && stopUpdate.departure) {
+                    if (stopUpdate.departure.time) {
+                        // The 'time' object from protobufjs is a Long.js object.
+                        // We must convert it to a standard JavaScript number before using it.
+                        let departureTimestamp = stopUpdate.departure.time;
+                        if (typeof departureTimestamp === 'object' && typeof departureTimestamp.toNumber === 'function') {
+                            departureTimestamp = departureTimestamp.toNumber();
+                        }
+                        expectedUtc = new Date(departureTimestamp * 1000).toISOString();
                     }
-                    expectedUtc = new Date(departureTimestamp * 1000).toISOString();
+                    // Use GTFS-RT delay field — positive value means explicitly delayed
+                    const rawDelay = stopUpdate.departure.delay;
+                    const delaySeconds = (typeof rawDelay === 'object' && rawDelay?.toNumber)
+                        ? rawDelay.toNumber()
+                        : (Number(rawDelay) || 0);
+                    isDelayed = delaySeconds > 0;
                 }
             }
             const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
@@ -452,6 +461,7 @@ app.get('/api/departures', async (req, res) => {
                 headsign: s.trip_headsign,
                 scheduledDepartureUtc: scheduledUtc.toISOString(),
                 expectedDepartureUtc: (expectedUtc !== scheduledUtc.toISOString()) ? expectedUtc : null,
+                isDelayed: isDelayed,
                 secondsUntilDeparture: secondsUntil,
                 routeLongName: s.route_long_name,
                 routeColor: s.route_color,
