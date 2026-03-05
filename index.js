@@ -139,9 +139,18 @@ app.get('/api/v2/search', async (req, res) => {
         const lon = parseFloat(req.query.lon);
         const hasLocation = !isNaN(lat) && !isNaN(lon);
 
-        const stopsQueryParams = hasLocation ? [searchQuery, lon, lat] : [searchQuery];
+        // Split query into tokens for order-independent matching
+        // e.g. "stop 10 ann" matches "Ann Street Stop 10"
+        const tokens = q.trim().split(/\s+/).filter(t => t.length >= 1);
+        const tokenPatterns = tokens.map(t => `%${t}%`);
+        const nameTokenConds = tokenPatterns.map((_, i) => `stop_name ILIKE $${i + 1}`).join(' AND ');
+        const descTokenConds = tokenPatterns.map((_, i) => `COALESCE(stop_desc, '') ILIKE $${i + 1}`).join(' AND ');
+        const stopTokenCondition = `(${nameTokenConds}) OR (${descTokenConds})`;
+        const locOffset = tokenPatterns.length;
+
+        const stopsQueryParams = hasLocation ? [...tokenPatterns, lon, lat] : tokenPatterns;
         const distanceSelect = hasLocation
-            ? `ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography))::int AS distance_m`
+            ? `ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($${locOffset + 1}, $${locOffset + 2}), 4326)::geography))::int AS distance_m`
             : `NULL::int AS distance_m`;
         const orderBy = hasLocation ? `ORDER BY distance_m ASC NULLS LAST` : `ORDER BY s.stop_name`;
 
@@ -149,7 +158,7 @@ app.get('/api/v2/search', async (req, res) => {
             WITH initial_matches AS (
                 SELECT stop_id, parent_station
                 FROM stops
-                WHERE stop_name ILIKE $1 OR COALESCE(stop_desc, '') ILIKE $1
+                WHERE ${stopTokenCondition}
                 LIMIT 50
             ),
             expanded AS (
