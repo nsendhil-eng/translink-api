@@ -908,11 +908,11 @@ app.get('/api/trip-stops', async (req, res) => {
 
         if (!trip_id) return res.status(400).json({ error: 'trip_id or (route_id + direction_id) required.' });
 
-        // Parallel: trip info, stop list, GTFS-RT
-        const [tripInfoResult, stopResult, liveResponse] = await Promise.all([
+        // Parallel: trip info, stop list, GTFS-RT trip updates + vehicle positions
+        const [tripInfoResult, stopResult, liveResponse, vehicleResponse] = await Promise.all([
             pool.query(`
                 SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
-                       r.route_short_name, r.route_color
+                       r.route_short_name, r.route_color, r.route_type
                 FROM trips t JOIN routes r ON r.route_id = t.route_id WHERE t.trip_id = $1
             `, [trip_id]),
             pool.query(`
@@ -921,13 +921,14 @@ app.get('/api/trip-stops', async (req, res) => {
                 FROM stop_times st JOIN stops s ON st.stop_id = s.stop_id
                 WHERE st.trip_id = $1 ORDER BY st.stop_sequence
             `, [trip_id]),
-            fetch(REALTIME_URL, fetchOptions)
+            fetch(REALTIME_URL, fetchOptions),
+            fetch(VEHICLE_POSITIONS_URL, fetchOptions)
         ]);
 
         if (tripInfoResult.rows.length === 0) return res.status(404).json({ error: 'Trip not found.' });
         const tripInfo = tripInfoResult.rows[0];
 
-        // Parse GTFS-RT
+        // Parse GTFS-RT trip updates
         const buffer = await liveResponse.arrayBuffer();
         const feed = gtfsRealtime.decode(Buffer.from(buffer));
         const stopTimeUpdateMap = new Map();
@@ -939,6 +940,26 @@ app.get('/api/trip-stops', async (req, res) => {
                 break;
             }
         }
+
+        // Parse GTFS-RT vehicle positions
+        let vehicle = null;
+        try {
+            const vBuffer = await vehicleResponse.arrayBuffer();
+            const vFeed = gtfsRealtime.decode(Buffer.from(vBuffer));
+            for (const entity of vFeed.entity) {
+                if (entity.vehicle?.trip?.tripId === trip_id) {
+                    const pos = entity.vehicle.position;
+                    if (pos) {
+                        vehicle = {
+                            lat: pos.latitude,
+                            lon: pos.longitude,
+                            bearing: pos.bearing || 0
+                        };
+                    }
+                    break;
+                }
+            }
+        } catch (e) { /* vehicle position not critical */ }
 
         // Get shape
         let shape = [];
@@ -992,6 +1013,8 @@ app.get('/api/trip-stops', async (req, res) => {
                 lon: parseFloat(s.lon),
                 scheduledTime,
                 estimatedTime: estimatedTime !== scheduledTime ? estimatedTime : null,
+                estimatedUtc: estimatedUtc.toISOString(),
+                secondsUntil,
                 isUpcoming,
                 isNearest: false
             };
@@ -1011,11 +1034,13 @@ app.get('/api/trip-stops', async (req, res) => {
                 routeId: tripInfo.route_id,
                 routeShortName: tripInfo.route_short_name,
                 routeColor: tripInfo.route_color,
+                routeType: tripInfo.route_type,
                 headsign: tripInfo.trip_headsign,
                 directionId: tripInfo.direction_id
             },
             shape,
-            stops
+            stops,
+            vehicle
         });
     } catch (error) {
         console.error('trip-stops failed:', error);
