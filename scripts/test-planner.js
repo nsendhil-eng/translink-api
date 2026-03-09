@@ -53,8 +53,8 @@ const TEST_JOURNEYS = [
         name: 'City → Indooroopilly (train)',
         from: { name: 'Roma Street Station', lat: -27.4647, lon: 153.0174 },
         to:   { name: 'Indooroopilly Station', lat: -27.4997, lon: 152.9693 },
-        expectedModes: ['RAIL'],
-        notes: 'Ipswich/Springfield line — direct, ~20 min'
+        expectedModes: ['RAIL', 'BUS'],
+        notes: 'Ipswich/Springfield train OR direct bus 444 — ~20 min'
     },
     {
         name: 'North Quay → Kangaroo Point (ferry)',
