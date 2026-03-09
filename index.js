@@ -1154,7 +1154,7 @@ app.get('/api/plan', async (req, res) => {
             `&date=${planDate}` +
             `&mode=${planModes}` +
             `&numItineraries=5` +
-            `&walkReluctance=2` +
+            `&walkReluctance=5` +
             `&maxWalkDistance=1500`;
 
         const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' } });
