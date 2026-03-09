@@ -1190,7 +1190,16 @@ app.get('/api/plan', async (req, res) => {
             }))
         }));
 
-        res.json({ itineraries });
+        const TRANSIT_MODES = new Set(['BUS','RAIL','TRAM','FERRY','SUBWAY','GONDOLA','FUNICULAR','CABLE_CAR']);
+        const hasTransit = it => it.legs.some(l => TRANSIT_MODES.has(l.mode));
+
+        // Put transit itineraries first; walk-only fall to the back
+        const sorted = [
+            ...itineraries.filter(hasTransit),
+            ...itineraries.filter(it => !hasTransit(it))
+        ];
+
+        res.json({ itineraries: sorted });
     } catch (error) {
         console.error('plan failed:', error);
         res.status(500).json({ error: 'Failed to fetch journey plan.' });
