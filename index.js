@@ -1132,6 +1132,71 @@ app.get('/api/next-trips', async (req, res) => {
     }
 });
 
+// --- PLAN ENDPOINT ---
+// GET /api/plan?fromLat=X&fromLon=Y&toLat=A&toLon=B&time=08:00am&date=2026-03-09
+// Proxies to OTP and returns cleaned itineraries
+const OTP_URL = process.env.OTP_URL || 'http://65.109.234.125:8080';
+
+app.get('/api/plan', async (req, res) => {
+    const { fromLat, fromLon, toLat, toLon, time, date, modes } = req.query;
+    if (!fromLat || !fromLon || !toLat || !toLon) {
+        return res.status(400).json({ error: 'fromLat, fromLon, toLat, toLon are required.' });
+    }
+    const planDate = date || new Date().toISOString().slice(0, 10);
+    const planTime = time || '8:00am';
+    const planModes = modes || 'TRANSIT,WALK';
+
+    try {
+        const otpUrl = `${OTP_URL}/otp/routers/default/plan` +
+            `?fromPlace=${fromLat},${fromLon}` +
+            `&toPlace=${toLat},${toLon}` +
+            `&time=${encodeURIComponent(planTime)}` +
+            `&date=${planDate}` +
+            `&mode=${planModes}` +
+            `&numItineraries=5` +
+            `&walkReluctance=2` +
+            `&maxWalkDistance=1500`;
+
+        const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' } });
+        if (!otpRes.ok) return res.status(502).json({ error: 'OTP request failed.' });
+
+        const data = await otpRes.json();
+        const itineraries = (data.plan?.itineraries || []).map(it => ({
+            duration: it.duration,
+            startTime: it.startTime,
+            endTime: it.endTime,
+            walkDistance: Math.round(it.walkDistance),
+            transfers: it.transfers,
+            legs: it.legs.map(leg => ({
+                mode: leg.mode,
+                startTime: leg.startTime,
+                endTime: leg.endTime,
+                duration: Math.round(leg.duration),
+                distance: Math.round(leg.distance),
+                from: { name: leg.from.name, lat: leg.from.lat, lon: leg.from.lon, stopCode: leg.from.stopCode },
+                to:   { name: leg.to.name,   lat: leg.to.lat,   lon: leg.to.lon,   stopCode: leg.to.stopCode   },
+                routeShortName: leg.routeShortName || null,
+                routeLongName:  leg.routeLongName  || null,
+                routeColor:     leg.routeColor     || null,
+                headsign:       leg.headsign       || null,
+                tripId:         leg.tripId         || null,
+                legGeometry:    leg.legGeometry?.points || null,
+                steps: (leg.steps || []).map(s => ({
+                    distance: Math.round(s.distance),
+                    streetName: s.streetName,
+                    relativeDirection: s.relativeDirection,
+                    absoluteDirection: s.absoluteDirection
+                }))
+            }))
+        }));
+
+        res.json({ itineraries });
+    } catch (error) {
+        console.error('plan failed:', error);
+        res.status(500).json({ error: 'Failed to fetch journey plan.' });
+    }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
