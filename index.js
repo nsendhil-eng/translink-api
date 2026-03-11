@@ -25,6 +25,10 @@ const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 let vehiclePositionsCache = null;
 let vehiclePositionsCacheTime = 0;
 
+// Cache TripUpdates for 15 s (used by /api/plan-delays)
+let tripUpdatesCache = null;
+let tripUpdatesCacheTime = 0;
+
 function haversineMeters(lat1, lon1, lat2, lon2) {
     const R = 6371000;
     const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
@@ -1136,6 +1140,42 @@ app.get('/api/next-trips', async (req, res) => {
 // GET /api/plan?fromLat=X&fromLon=Y&toLat=A&toLon=B&time=08:00am&date=2026-03-09
 // Proxies to OTP and returns cleaned itineraries
 const OTP_URL = process.env.OTP_URL || 'http://65.109.234.125:8080';
+
+// ── GET /api/plan-delays?trip_ids=T1,T2 ────────────────────────────────────
+// Returns GTFS-RT departure delay (seconds) for the requested trip IDs.
+// Only trips with delay > 0 appear in the response.
+// Used by clients to show "Delays reported" badge when expanding an itinerary.
+app.get('/api/plan-delays', async (req, res) => {
+    const { trip_ids } = req.query;
+    if (!trip_ids) return res.json({ delays: {} });
+    const requested = new Set(trip_ids.split(',').map(s => s.trim()).filter(Boolean));
+
+    try {
+        if (!tripUpdatesCache || Date.now() - tripUpdatesCacheTime > 15000) {
+            const r = await fetch(REALTIME_URL, fetchOptions);
+            const buf = await r.arrayBuffer();
+            tripUpdatesCache = gtfsRealtime.decode(Buffer.from(buf));
+            tripUpdatesCacheTime = Date.now();
+        }
+
+        const delays = {};
+        for (const entity of tripUpdatesCache.entity) {
+            const tu = entity.tripUpdate;
+            if (!tu?.trip?.tripId || !requested.has(tu.trip.tripId)) continue;
+            let maxDelay = 0;
+            for (const stu of (tu.stopTimeUpdate || [])) {
+                const d = stu.departure?.delay ?? stu.arrival?.delay ?? 0;
+                if (d > maxDelay) maxDelay = d;
+            }
+            if (maxDelay > 0) delays[tu.trip.tripId] = maxDelay;
+        }
+
+        res.json({ delays });
+    } catch (e) {
+        console.error('plan-delays failed:', e);
+        res.json({ delays: {} });
+    }
+});
 
 app.get('/api/plan', async (req, res) => {
     const { fromLat, fromLon, toLat, toLon, time, date, modes } = req.query;

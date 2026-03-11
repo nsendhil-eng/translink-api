@@ -17,6 +17,7 @@ const planState = {
     markers: [],
     userLat: null,
     userLon: null,
+    delayCache: {},   // key = tripIds string → true|false
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -249,14 +250,26 @@ function renderResults() {
     }
 
     el.innerHTML = `
-        <div class="flex gap-2 mb-1">
+        <div class="flex items-center gap-2 mb-1">
             <button id="sort-fastest" class="plan-sort-btn ${planState.sortMode==='fastest' ? 'plan-sort-active' : 'plan-sort-inactive'}">⚡ Fastest</button>
             <button id="sort-walking" class="plan-sort-btn ${planState.sortMode==='walking' ? 'plan-sort-active' : 'plan-sort-inactive'}">🚶 Least walking</button>
+            <button id="refresh-btn" title="Refresh" class="plan-sort-btn plan-sort-inactive ml-auto flex items-center gap-1">
+                <svg id="refresh-icon" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+                Refresh
+            </button>
         </div>
         ${list.map((it, i) => renderCard(it, i)).join('')}`;
 
     el.querySelector('#sort-fastest').addEventListener('click', () => { planState.sortMode = 'fastest'; renderResults(); });
     el.querySelector('#sort-walking').addEventListener('click', () => { planState.sortMode = 'walking'; renderResults(); });
+    el.querySelector('#refresh-btn').addEventListener('click', () => {
+        const icon = el.querySelector('#refresh-icon');
+        if (icon) icon.classList.add('animate-spin');
+        fetchPlan();
+    });
 
     el.querySelectorAll('.plan-card').forEach(card => {
         card.addEventListener('click', () => {
@@ -268,12 +281,59 @@ function renderResults() {
             } else {
                 planState.selectedIdx = i;
                 drawItinerary(sorted()[i]);
+                // Lazy delay check only when card is expanded
+                checkDelaysForCard(sorted()[i], i);
             }
             renderResults();
             // Scroll card into view on mobile
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
     });
+
+    // If a card was already selected (re-render after sort change), re-attach delay badge
+    if (planState.selectedIdx !== null) {
+        const it = sorted()[planState.selectedIdx];
+        if (it) checkDelaysForCard(it, planState.selectedIdx);
+    }
+}
+
+// ─── Delay check ──────────────────────────────────────────────────────────────
+
+async function checkDelaysForCard(it, cardIdx) {
+    const affectedLegs = it.legs.filter(l => (l.mode === 'BUS' || l.mode === 'TRAM') && l.tripId);
+    if (!affectedLegs.length) return;
+
+    const key = affectedLegs.map(l => l.tripId).join(',');
+    // Use cache if available
+    if (planState.delayCache[key] !== undefined) {
+        if (planState.delayCache[key]) renderDelayBadge(cardIdx);
+        return;
+    }
+
+    try {
+        const res = await fetch(`${BASE_URL}/api/plan-delays?trip_ids=${encodeURIComponent(key)}`);
+        const data = await res.json();
+        const hasDelay = Object.values(data.delays || {}).some(d => d > 60);
+        planState.delayCache[key] = hasDelay;
+        if (hasDelay) renderDelayBadge(cardIdx);
+    } catch { /* silent — don't surface delay errors to user */ }
+}
+
+function renderDelayBadge(cardIdx) {
+    const card = document.querySelector(`.plan-card[data-idx="${cardIdx}"]`);
+    if (!card || card.querySelector('.delay-badge')) return;
+    const badge = document.createElement('div');
+    badge.className = 'delay-badge px-4 pb-2';
+    badge.innerHTML = `<span class="inline-flex items-center gap-1.5 text-xs font-semibold
+        text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30
+        border border-amber-200 dark:border-amber-700 px-2.5 py-1 rounded-full">
+        <svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+        </svg>
+        Delays reported on this route
+    </span>`;
+    const borderDiv = card.querySelector('.border-t');
+    if (borderDiv) borderDiv.prepend(badge);
 }
 
 function renderCard(it, i) {
