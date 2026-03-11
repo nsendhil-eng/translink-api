@@ -1148,7 +1148,11 @@ const OTP_URL = process.env.OTP_URL || 'http://65.109.234.125:8080';
 app.get('/api/plan-delays', async (req, res) => {
     const { trip_ids } = req.query;
     if (!trip_ids) return res.json({ delays: {} });
-    const requested = new Set(trip_ids.split(',').map(s => s.trim()).filter(Boolean));
+    // OTP prefixes trip IDs with agency ID (e.g. "1:36180842-BT...") but the
+    // GTFS-RT feed uses bare trip IDs — strip the prefix before matching.
+    const requested = new Set(
+        trip_ids.split(',').map(s => s.trim().replace(/^\d+:/, '')).filter(Boolean)
+    );
 
     try {
         if (!tripUpdatesCache || Date.now() - tripUpdatesCacheTime > 15000) {
