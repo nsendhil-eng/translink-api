@@ -30,12 +30,12 @@ git add -A && git commit -m "..." && git push
 | `GET /api/stops-near-me` | `lat`, `lon`, `radius` (default 500m) |
 | `GET /api/stop-live` | GTFS-RT realtime data (vehicle position + shape) for a stop |
 | `GET /api/vehicles-near-me` | Vehicle positions, cached 4s |
-| `GET /api/plan` | Journey planner — proxies to OTP on Hetzner |
+| `GET /api/plan` | Journey planner — proxies to OTP on Oracle Cloud |
 | `GET /api/plan-delays` | GTFS-RT departure delays for given `trip_ids` (15s cache) |
 
 ### Journey Planner (`/api/plan`)
 
-Proxies to OpenTripPlanner 2.6.0 on Hetzner:
+Proxies to OpenTripPlanner 2.6.0 on Oracle Cloud (Sydney):
 
 ```
 GET /api/plan?fromLat=&fromLon=&toLat=&toLon=&date=YYYY-MM-DD&time=8:30am
@@ -73,26 +73,31 @@ node scripts/test-planner.js --time "9:00am" # override departure time
 
 Runs 8 real Brisbane journeys and compares against expected transport modes.
 
-## OTP Server (Hetzner)
+## OTP Server (Oracle Cloud)
 
 | Item | Value |
 |------|-------|
-| Provider | Hetzner CX22, Helsinki |
-| IP | `65.109.234.125` |
-| SSH | `ssh root@65.109.234.125` |
+| Provider | Oracle Cloud, Australia East (Sydney), instance `otp-seq` |
+| Shape | VM.Standard.A1.Flex — 4 OCPU / 24 GB (Always Free), Ubuntu 24.04 aarch64 |
+| IP | `152.67.98.226` (ephemeral — changes only if the instance is terminated) |
+| SSH | `ssh ubuntu@152.67.98.226` |
 | OTP version | 2.6.0, Java 21 |
-| Graph | `/root/otp/graphs/seq/graph.obj` (SEQ GTFS + OSM) |
-| Service | `systemctl status otp` / `systemctl restart otp` |
+| Graph | `/home/ubuntu/otp/graphs/seq/graph.obj` (SEQ GTFS + OSM extract, bbox 151.5,-28.5,154.0,-26.0) |
+| Config | `otp-config.json` enables `LegacyRestApi` (required for `/otp/routers/default/plan`) |
+| Service | `sudo systemctl status otp` / `sudo systemctl restart otp` |
 | Logs | `journalctl -u otp -f` |
-| Auto-rebuild | Weekly cron Sun 3am: `bash /root/otp/rebuild.sh` |
+| Auto-rebuild | Weekly cron Sun 3am AEST: `/home/ubuntu/otp/rebuild.sh` (log: `~/otp/rebuild.log`) |
+| Firewall | OCI security list allows 22, 80, 443, 8080; iptables allows 22, 8080 |
+
+`rebuild.sh` builds into `graphs/seq-new` while the live server keeps running, then swaps it in (previous graph kept at `graphs/seq.prev`) and restarts the service.
 
 **Manual graph rebuild:**
 ```bash
-ssh root@65.109.234.125
-cd /root/otp && bash rebuild.sh
+ssh ubuntu@152.67.98.226
+~/otp/rebuild.sh && tail ~/otp/rebuild.log
 ```
 
 **Health check:**
 ```bash
-curl "http://65.109.234.125:8080/otp/routers/default/plan?fromPlace=-27.47,153.02&toPlace=-27.48,153.03&mode=TRANSIT,WALK&numItineraries=1"
+curl "http://152.67.98.226:8080/otp/routers/default/plan?fromPlace=-27.47,153.02&toPlace=-27.48,153.03&mode=TRANSIT,WALK&numItineraries=1"
 ```

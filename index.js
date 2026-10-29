@@ -1139,7 +1139,7 @@ app.get('/api/next-trips', async (req, res) => {
 // --- PLAN ENDPOINT ---
 // GET /api/plan?fromLat=X&fromLon=Y&toLat=A&toLon=B&time=08:00am&date=2026-03-09
 // Proxies to OTP and returns cleaned itineraries
-const OTP_URL = process.env.OTP_URL || 'http://65.109.234.125:8080';
+const OTP_URL = process.env.OTP_URL || 'http://152.67.98.226:8080';
 
 // ── GET /api/plan-delays?trip_ids=T1,T2 ────────────────────────────────────
 // Returns GTFS-RT departure delay (seconds) for the requested trip IDs.
