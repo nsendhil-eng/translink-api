@@ -77,6 +77,60 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// --- Service alerts --------------------------------------------------------------
+const ALERTS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/alerts';
+
+// Translink sends no severity, so rank by effect
+const ALERT_EFFECT_RANK = {
+    NO_SERVICE: 100, REDUCED_SERVICE: 90, SIGNIFICANT_DELAYS: 85, DETOUR: 80,
+    MODIFIED_SERVICE: 60, STOP_MOVED: 40, ACCESSIBILITY_ISSUE: 30, ADDITIONAL_SERVICE: 20
+};
+const ALERT_KIND = {
+    NO_SERVICE: 'disruption', REDUCED_SERVICE: 'disruption', SIGNIFICANT_DELAYS: 'disruption', DETOUR: 'disruption',
+    MODIFIED_SERVICE: 'change', STOP_MOVED: 'stopMoved', ACCESSIBILITY_ISSUE: 'accessibility', ADDITIONAL_SERVICE: 'extra'
+};
+const LONG_RUNNING_S = 30 * 24 * 3600;
+
+// Route ids carry a timetable version ("BRIP-4997"); alerts may name a newer version than
+// our database holds, so match on the code before it
+const routeCode = (id) => String(id).replace(/-\d+$/, '');
+
+// The feed's text is HTML flattened without spacing: "in briefStart: 11:30pm…OctoberEnd:".
+// Break where a lowercase letter, digit or punctuation runs straight into a capitalised
+// word — except Scottish/Irish name prefixes like MacGregor or McDowall.
+function cleanAlertText(text) {
+    if (!text) return '';
+    return text
+        .replace(/([a-z0-9.)!?:])(?=[A-Z][a-z])/g, (m, ch, offset, s) => {
+            const before = s.slice(Math.max(0, offset - 3), offset + 1);
+            return /(^|[^A-Za-z])(Mc|Mac)$/.test(before) ? ch : ch + '\n';
+        })
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
+    const obj = gtfsRealtime.toObject(feed, { enums: String, longs: Number });
+    return (obj.entity || []).filter(e => e.alert).map(e => {
+        const a = e.alert;
+        const text = (t) => t?.translation?.find(x => !x.language || x.language.startsWith('en'))?.text || t?.translation?.[0]?.text || '';
+        const informed = a.informedEntity || [];
+        return {
+            id: e.id,
+            header: cleanAlertText(text(a.headerText)).replace(/\n/g, ' '),
+            description: cleanAlertText(text(a.descriptionText)),
+            url: text(a.url) || null,
+            cause: a.cause || 'UNKNOWN_CAUSE',
+            effect: a.effect || 'UNKNOWN_EFFECT',
+            periods: (a.activePeriod || []).map(p => ({ start: p.start || null, end: p.end || null })),
+            routeCodes: new Set(informed.filter(x => x.routeId).map(x => routeCode(x.routeId))),
+            stopIds: new Set(informed.filter(x => x.stopId).map(x => x.stopId)),
+            routeCount: informed.filter(x => x.routeId).length
+        };
+    });
+});
+
 // --- Vehicle heading from the trip's shape ------------------------------------
 // Translink's VehiclePositions feed sends no bearing, so derive it: snap the vehicle onto
 // the trip's shape (points in travel order) and take the direction of that segment.
@@ -1322,6 +1376,101 @@ app.get('/api/plan-delays', async (req, res) => {
     } catch (e) {
         console.error('plan-delays failed:', e);
         res.json({ delays: {} });
+    }
+});
+
+// --- ALERTS ENDPOINT ---
+// GET /api/alerts?route_ids=412-5146,SPRP-4740&stop_ids=1951,600284
+// Active Translink service alerts (plus those starting within 24 h, as "upcoming") that
+// affect any of the given routes or stops, most important first. Stop matching includes
+// the stop's parent station and sibling platforms.
+const ALERT_UPCOMING_S = 24 * 3600;
+// Delay alerts describe a single incident; Translink sometimes never closes them
+// (e.g. "9:07pm … delayed up to 10 minutes" still open two days later)
+const OPEN_DELAY_MAX_S = 12 * 3600;
+
+app.get('/api/alerts', async (req, res) => {
+    const split = (v) => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+    const routeIds = split(req.query.route_ids);
+    const stopIds = split(req.query.stop_ids);
+    if (!routeIds.length && !stopIds.length) return res.json({ alerts: [] });
+
+    try {
+        // Stops expand to their station (parent + sibling platforms) and to every route that
+        // serves them: route-wide alerts like track closures name routes, not stops, and a
+        // closed station has no departures for the client to take route ids from
+        const [alerts, stopRows, servingRows] = await Promise.all([
+            getAlerts().then(c => c.index),
+            stopIds.length
+                ? pool.query(`
+                    SELECT s.stop_id, NULLIF(s.parent_station, '') AS parent
+                    FROM stops s
+                    WHERE s.stop_id = ANY($1)
+                       OR s.parent_station IN (SELECT parent_station FROM stops WHERE stop_id = ANY($1) AND parent_station <> '')
+                  `, [stopIds]).then(r => r.rows)
+                : Promise.resolve([]),
+            stopIds.length
+                ? pool.query(`
+                    SELECT DISTINCT t.route_id
+                    FROM stop_times st JOIN trips t ON t.trip_id = st.trip_id
+                    WHERE st.stop_id = ANY($1)
+                  `, [stopIds]).then(r => r.rows)
+                : Promise.resolve([])
+        ]);
+
+        const wantCodes = new Map(routeIds.map(id => [routeCode(id), id]));
+        for (const r of servingRows) if (!wantCodes.has(routeCode(r.route_id))) wantCodes.set(routeCode(r.route_id), r.route_id);
+        const wantStops = new Set(stopIds);
+        for (const r of stopRows) { wantStops.add(r.stop_id); if (r.parent) wantStops.add(r.parent); }
+
+        const now = Math.floor(Date.now() / 1000);
+        const out = [];
+        for (const a of alerts) {
+            // The period that applies now, else the next one within 24 h
+            const periods = a.periods.length ? a.periods : [{ start: null, end: null }];
+            const current = periods.find(p => (!p.start || p.start <= now) && (!p.end || p.end >= now));
+            const next = current ? null : periods
+                .filter(p => p.start && p.start > now && p.start - now <= ALERT_UPCOMING_S)
+                .sort((x, y) => x.start - y.start)[0];
+            const period = current || next;
+            if (!period) continue;
+            if (a.effect === 'SIGNIFICANT_DELAYS' && !period.end && period.start && now - period.start > OPEN_DELAY_MAX_S) continue;
+
+            const matchedRouteIds = [...a.routeCodes].filter(c => wantCodes.has(c)).map(c => wantCodes.get(c));
+            const matchedStopIds = [...a.stopIds].filter(s => wantStops.has(s));
+            if (!matchedRouteIds.length && !matchedStopIds.length) continue;
+
+            const firstStart = Math.min(...a.periods.map(p => p.start || now));
+            const longRunning = now - firstStart > LONG_RUNNING_S;
+            const status = current ? 'active' : 'upcoming';
+            let priority = ALERT_EFFECT_RANK[a.effect] ?? 10;
+            if (longRunning) priority -= 50;      // background conditions never crowd out news
+            if (status === 'upcoming') priority -= 5;
+
+            out.push({
+                id: a.id,
+                header: a.header,
+                description: a.description,
+                url: a.url,
+                cause: a.cause,
+                effect: a.effect,
+                kind: ALERT_KIND[a.effect] || 'info',
+                status,
+                priority,
+                longRunning,
+                activeFrom: period.start ? new Date(period.start * 1000).toISOString() : null,
+                activeUntil: period.end ? new Date(period.end * 1000).toISOString() : null,
+                matchedRouteIds,
+                matchedStopIds,
+                routeCount: a.routeCount
+            });
+        }
+        out.sort((x, y) => y.priority - x.priority || (x.activeFrom || '').localeCompare(y.activeFrom || ''));
+        res.json({ alerts: out });
+    } catch (error) {
+        console.error('alerts failed:', error);
+        // Alerts are supplementary: never break the screen asking for them
+        res.json({ alerts: [] });
     }
 });
 
