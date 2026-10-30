@@ -575,6 +575,8 @@ app.get('/api/departures', async (req, res) => {
             const stopTimeUpdates = liveDataMap.get(s.trip_id);
             let expectedUtc = scheduledUtc.toISOString();
             let isDelayed = false;
+            let isRealtime = false;
+            const toNum = (v) => (typeof v === 'object' && v?.toNumber) ? v.toNumber() : Number(v);
 
             if (stopTimeUpdates) {
                 const stopUpdate = stopTimeUpdates.find(stu => stu.stopSequence === s.stop_sequence);
@@ -587,13 +589,26 @@ app.get('/api/departures', async (req, res) => {
                             departureTimestamp = departureTimestamp.toNumber();
                         }
                         expectedUtc = new Date(departureTimestamp * 1000).toISOString();
+                        isRealtime = true;
                     }
                     // Use GTFS-RT delay field — positive value means explicitly delayed
                     const rawDelay = stopUpdate.departure.delay;
-                    const delaySeconds = (typeof rawDelay === 'object' && rawDelay?.toNumber)
-                        ? rawDelay.toNumber()
-                        : (Number(rawDelay) || 0);
+                    const delaySeconds = Number(toNum(rawDelay)) || 0;
                     isDelayed = delaySeconds > 0;
+                    if (rawDelay != null) isRealtime = true;
+                } else if (!stopUpdate) {
+                    // No update for this stop: carry forward the latest earlier stop's delay
+                    // (GTFS-RT propagation), so countdowns past the next stop stay live
+                    const prior = stopTimeUpdates
+                        .filter(u => u.stopSequence < s.stop_sequence)
+                        .sort((a, b) => b.stopSequence - a.stopSequence)[0];
+                    const rawDelay = prior?.departure?.delay ?? prior?.arrival?.delay;
+                    if (rawDelay != null) {
+                        const delay = toNum(rawDelay);
+                        expectedUtc = new Date(scheduledUtc.getTime() + delay * 1000).toISOString();
+                        isDelayed = delay > 0;
+                        isRealtime = true;
+                    }
                 }
             }
             const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
@@ -615,6 +630,9 @@ app.get('/api/departures', async (req, res) => {
                 scheduledDepartureUtc: scheduledUtc.toISOString(),
                 expectedDepartureUtc: (expectedUtc !== scheduledUtc.toISOString()) ? expectedUtc : null,
                 isDelayed: isDelayed,
+                // Additive: lets clients tell "live & on time" from "timetable only"
+                isRealtime,
+                delaySeconds: isRealtime ? Math.round((new Date(expectedUtc) - scheduledUtc) / 1000) : null,
                 secondsUntilDeparture: secondsUntil,
                 routeLongName: s.route_long_name,
                 routeColor: s.route_color,
