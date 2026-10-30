@@ -506,8 +506,15 @@ app.get('/api/stops-near-me', async (req, res) => {
 
 // --- MAIN DEPARTURES ENDPOINT ---
 app.get('/api/departures', async (req, res) => {
-    const stopCodes = (req.query.stops || '001951,600284,600286').split(',');
-    
+    // No `stops` param at all: the web board's default stops (it relies on this).
+    // `stops` given but empty (e.g. a parent-station record with no stop_code): return
+    // nothing, rather than silently answering with the default stops' departures.
+    if (req.query.stops !== undefined) {
+        const requested = String(req.query.stops).split(',').map(s => s.trim()).filter(Boolean);
+        if (requested.length === 0) return res.json([]);
+    }
+    const stopCodes = (req.query.stops || '001951,600284,600286').split(',').map(s => s.trim()).filter(Boolean);
+
     try {
         const now = new Date();
         const timeZone = 'Australia/Brisbane';
