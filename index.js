@@ -21,13 +21,52 @@ const REALTIME_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripU
 const VEHICLE_POSITIONS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions';
 const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 
-// Cache vehicle positions for 4 s so rapid polls don't hammer Translink
-let vehiclePositionsCache = null;
-let vehiclePositionsCacheTime = 0;
+// --- Shared GTFS-RT feed cache ----------------------------------------------
+// Every live endpoint reads Translink's feeds through these caches instead of fetching
+// per request (TripUpdates is ~1.2 MB). Per server instance:
+//  - refresh at most once per TTL; concurrent requests share one in-flight download
+//  - an index by trip_id is built once per refresh, not re-scanned by every endpoint
+//  - if a refresh fails, serve the last good copy for up to STALE_MAX_MS
+const STALE_MAX_MS = 120_000;
 
-// Cache TripUpdates for 15 s (used by /api/plan-delays)
-let tripUpdatesCache = null;
-let tripUpdatesCacheTime = 0;
+function createFeedCache(name, url, ttlMs, buildIndex) {
+    let current = null;     // { feed, index, fetchedAt }
+    let inFlight = null;
+    const refresh = async () => {
+        const r = await fetch(url, fetchOptions);
+        if (!r.ok) throw new Error(`${name} feed HTTP ${r.status}`);
+        const feed = gtfsRealtime.decode(Buffer.from(await r.arrayBuffer()));
+        current = { feed, index: buildIndex(feed), fetchedAt: Date.now() };
+        return current;
+    };
+    return async function get() {
+        if (current && Date.now() - current.fetchedAt < ttlMs) return current;
+        if (!inFlight) inFlight = refresh().finally(() => { inFlight = null; });
+        try {
+            return await inFlight;
+        } catch (err) {
+            if (current && Date.now() - current.fetchedAt < STALE_MAX_MS) {
+                console.warn(`${name} refresh failed, serving ${Math.round((Date.now() - current.fetchedAt) / 1000)}s old copy:`, err.message);
+                return current;
+            }
+            throw err;
+        }
+    };
+}
+
+// trip_id -> TripUpdate
+const getTripUpdates = createFeedCache('TripUpdates', REALTIME_URL, 10_000, (feed) => {
+    const byTrip = new Map();
+    for (const e of feed.entity) if (e.tripUpdate?.trip?.tripId) byTrip.set(e.tripUpdate.trip.tripId, e.tripUpdate);
+    return byTrip;
+});
+
+// trip_id -> VehiclePosition
+const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITIONS_URL, 4_000, (feed) => {
+    const byTrip = new Map();
+    for (const e of feed.entity) if (e.vehicle?.trip?.tripId) byTrip.set(e.vehicle.trip.tripId, e.vehicle);
+    return byTrip;
+});
 
 function haversineMeters(lat1, lon1, lat2, lon2) {
     const R = 6371000;
@@ -287,17 +326,11 @@ app.get('/api/vehicles-near-me', async (req, res) => {
     if (isNaN(lat) || isNaN(lon)) return res.status(400).json({ error: 'lat and lon are required.' });
 
     try {
-        // Refresh the feed at most once per 4 s
-        if (!vehiclePositionsCache || Date.now() - vehiclePositionsCacheTime > 4000) {
-            const r = await fetch(VEHICLE_POSITIONS_URL, fetchOptions);
-            const buf = await r.arrayBuffer();
-            vehiclePositionsCache = gtfsRealtime.decode(Buffer.from(buf));
-            vehiclePositionsCacheTime = Date.now();
-        }
+        const vehiclePositions = (await getVehiclePositions()).feed;
 
         // Filter to vehicles within radius
         const nearby = [];
-        for (const entity of vehiclePositionsCache.entity) {
+        for (const entity of vehiclePositions.entity) {
             const v = entity.vehicle;
             if (!v?.position) continue;
             const vLat = v.position.latitude;
@@ -547,21 +580,10 @@ app.get('/api/departures', async (req, res) => {
             return res.json([]);
         }
 
-        // --- CORRECT: Fetch and decode the GTFS-realtime protobuf feed ---
-        const liveResponse = await fetch(REALTIME_URL, fetchOptions);
-        if (!liveResponse.ok) {
-            throw new Error(`Failed to fetch live data: ${liveResponse.statusText}`);
-        }
-        const buffer = await liveResponse.arrayBuffer();
-        const feed = gtfsRealtime.decode(Buffer.from(buffer));
+        // trip_id -> stopTimeUpdates, from the shared GTFS-RT cache
+        const tripUpdates = (await getTripUpdates()).index;
+        const liveDataMap = { get: (tripId) => tripUpdates.get(tripId)?.stopTimeUpdate };
 
-        const liveDataMap = new Map();
-        feed.entity.forEach(entity => {
-            if (entity.tripUpdate) {
-                liveDataMap.set(entity.tripUpdate.trip.tripId, entity.tripUpdate.stopTimeUpdate);
-            }
-        });
-        
         const synchronizedNow = new Date();
         const enrichedDepartures = scheduledDepartures.map(s => {
             // --- ROBUST TIME CALCULATION LOGIC ---
@@ -767,17 +789,11 @@ app.get('/api/stop-live', async (req, res) => {
 
         if (upcoming.length === 0) return res.json({ trips: [] });
 
-        // Refresh vehicle positions cache if stale
-        if (!vehiclePositionsCache || Date.now() - vehiclePositionsCacheTime > 4000) {
-            const r = await fetch(VEHICLE_POSITIONS_URL, fetchOptions);
-            const buf = await r.arrayBuffer();
-            vehiclePositionsCache = gtfsRealtime.decode(Buffer.from(buf));
-            vehiclePositionsCacheTime = Date.now();
-        }
+        const vehiclePositions = (await getVehiclePositions()).feed;
 
         // Build trip_id → vehicle map from GTFS-RT
         const vehicleByTrip = {};
-        for (const entity of vehiclePositionsCache.entity) {
+        for (const entity of vehiclePositions.entity) {
             const v = entity.vehicle;
             if (!v?.position || !v?.trip?.tripId) continue;
             vehicleByTrip[v.trip.tripId] = {
@@ -938,7 +954,7 @@ app.get('/api/trip-stops', async (req, res) => {
         if (!trip_id) return res.status(400).json({ error: 'trip_id or (route_id + direction_id) required.' });
 
         // Parallel: trip info, stop list, GTFS-RT trip updates + vehicle positions
-        const [tripInfoResult, stopResult, liveResponse, vehicleResponse] = await Promise.all([
+        const [tripInfoResult, stopResult, tripUpdates, vehiclePositions] = await Promise.all([
             pool.query(`
                 SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
                        r.route_short_name, r.route_color, r.route_text_color, r.route_type
@@ -950,53 +966,38 @@ app.get('/api/trip-stops', async (req, res) => {
                 FROM stop_times st JOIN stops s ON st.stop_id = s.stop_id
                 WHERE st.trip_id = $1 ORDER BY st.stop_sequence
             `, [trip_id]),
-            fetch(REALTIME_URL, fetchOptions),
-            fetch(VEHICLE_POSITIONS_URL, fetchOptions)
+            getTripUpdates(),
+            // Vehicle position isn't critical — a feed failure just means no live vehicle
+            getVehiclePositions().catch(() => null)
         ]);
 
         if (tripInfoResult.rows.length === 0) return res.status(404).json({ error: 'Trip not found.' });
         const tripInfo = tripInfoResult.rows[0];
 
-        // Parse GTFS-RT trip updates
-        const buffer = await liveResponse.arrayBuffer();
-        const feed = gtfsRealtime.decode(Buffer.from(buffer));
+        // GTFS-RT trip updates for this trip
         const stopTimeUpdateMap = new Map();
-        for (const entity of feed.entity) {
-            if (entity.tripUpdate?.trip?.tripId === trip_id) {
-                for (const stu of (entity.tripUpdate.stopTimeUpdate || [])) {
-                    stopTimeUpdateMap.set(stu.stopSequence, stu);
-                }
-                break;
-            }
+        for (const stu of (tripUpdates.index.get(trip_id)?.stopTimeUpdate || [])) {
+            stopTimeUpdateMap.set(stu.stopSequence, stu);
         }
 
-        // Parse GTFS-RT vehicle positions
+        // GTFS-RT vehicle position for this trip
         let vehicle = null;
-        try {
-            const vBuffer = await vehicleResponse.arrayBuffer();
-            const vFeed = gtfsRealtime.decode(Buffer.from(vBuffer));
-            for (const entity of vFeed.entity) {
-                if (entity.vehicle?.trip?.tripId === trip_id) {
-                    const pos = entity.vehicle.position;
-                    if (pos) {
-                        let ts = entity.vehicle.timestamp;
-                        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-                        vehicle = {
-                            lat: pos.latitude,
-                            lon: pos.longitude,
-                            bearing: pos.bearing || 0,
-                            // How old the GPS fix is — clients show "40s ago"
-                            ageSeconds: ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null,
-                            // Lets clients place the vehicle between the right stops
-                            currentStopSequence: entity.vehicle.currentStopSequence ?? null,
-                            // GTFS-RT VehicleStopStatus: 0 INCOMING_AT, 1 STOPPED_AT, 2 IN_TRANSIT_TO
-                            currentStatus: entity.vehicle.currentStatus ?? null
-                        };
-                    }
-                    break;
-                }
-            }
-        } catch (e) { /* vehicle position not critical */ }
+        const vp = vehiclePositions?.index.get(trip_id);
+        if (vp?.position) {
+            let ts = vp.timestamp;
+            if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
+            vehicle = {
+                lat: vp.position.latitude,
+                lon: vp.position.longitude,
+                bearing: vp.position.bearing || 0,
+                // How old the GPS fix is — clients show "40s ago"
+                ageSeconds: ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null,
+                // Lets clients place the vehicle between the right stops
+                currentStopSequence: vp.currentStopSequence ?? null,
+                // GTFS-RT VehicleStopStatus: 0 INCOMING_AT, 1 STOPPED_AT, 2 IN_TRANSIT_TO
+                currentStatus: vp.currentStatus ?? null
+            };
+        }
 
         // Get shape
         let shape = [];
@@ -1130,7 +1131,7 @@ app.get('/api/next-trips', async (req, res) => {
         const formatBrisbane = (utcDate) =>
             new Intl.DateTimeFormat('en-AU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(utcDate);
 
-        const [stopsResult, liveResponse] = await Promise.all([
+        const [stopsResult, tripUpdates] = await Promise.all([
             pool.query(`
                 SELECT st.trip_id, st.departure_time, st.stop_sequence
                 FROM stop_times st
@@ -1144,15 +1145,11 @@ app.get('/api/next-trips', async (req, res) => {
                   )
                 ORDER BY st.departure_time
             `, [stop_id, route_id, direction_id, dateString]),
-            fetch(REALTIME_URL, fetchOptions)
+            getTripUpdates()
         ]);
 
-        const buffer = await liveResponse.arrayBuffer();
-        const feed = gtfsRealtime.decode(Buffer.from(buffer));
-        const liveDataMap = new Map();
-        feed.entity.forEach(entity => {
-            if (entity.tripUpdate) liveDataMap.set(entity.tripUpdate.trip.tripId, entity.tripUpdate.stopTimeUpdate);
-        });
+        // trip_id -> stopTimeUpdates, from the shared GTFS-RT cache
+        const liveDataMap = { get: (tripId) => tripUpdates.index.get(tripId)?.stopTimeUpdate };
 
         const trips = [];
         for (const row of stopsResult.rows) {
@@ -1228,17 +1225,12 @@ app.get('/api/plan-delays', async (req, res) => {
     );
 
     try {
-        if (!tripUpdatesCache || Date.now() - tripUpdatesCacheTime > 15000) {
-            const r = await fetch(REALTIME_URL, fetchOptions);
-            const buf = await r.arrayBuffer();
-            tripUpdatesCache = gtfsRealtime.decode(Buffer.from(buf));
-            tripUpdatesCacheTime = Date.now();
-        }
+        const byTrip = (await getTripUpdates()).index;
 
         const delays = {};
-        for (const entity of tripUpdatesCache.entity) {
-            const tu = entity.tripUpdate;
-            if (!tu?.trip?.tripId || !requested.has(tu.trip.tripId)) continue;
+        for (const tripId of requested) {
+            const tu = byTrip.get(tripId);
+            if (!tu) continue;
             let maxDelay = 0;
             for (const stu of (tu.stopTimeUpdate || [])) {
                 const d = stu.departure?.delay ?? stu.arrival?.delay ?? 0;
