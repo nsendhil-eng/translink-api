@@ -916,7 +916,7 @@ app.get('/api/trip-stops', async (req, res) => {
         const [tripInfoResult, stopResult, liveResponse, vehicleResponse] = await Promise.all([
             pool.query(`
                 SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
-                       r.route_short_name, r.route_color, r.route_type
+                       r.route_short_name, r.route_color, r.route_text_color, r.route_type
                 FROM trips t JOIN routes r ON r.route_id = t.route_id WHERE t.trip_id = $1
             `, [trip_id]),
             pool.query(`
@@ -954,10 +954,18 @@ app.get('/api/trip-stops', async (req, res) => {
                 if (entity.vehicle?.trip?.tripId === trip_id) {
                     const pos = entity.vehicle.position;
                     if (pos) {
+                        let ts = entity.vehicle.timestamp;
+                        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
                         vehicle = {
                             lat: pos.latitude,
                             lon: pos.longitude,
-                            bearing: pos.bearing || 0
+                            bearing: pos.bearing || 0,
+                            // How old the GPS fix is — clients show "40s ago"
+                            ageSeconds: ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null,
+                            // Lets clients place the vehicle between the right stops
+                            currentStopSequence: entity.vehicle.currentStopSequence ?? null,
+                            // GTFS-RT VehicleStopStatus: 0 INCOMING_AT, 1 STOPPED_AT, 2 IN_TRANSIT_TO
+                            currentStatus: entity.vehicle.currentStatus ?? null
                         };
                     }
                     break;
@@ -985,6 +993,9 @@ app.get('/api/trip-stops', async (req, res) => {
         // Build stops array
         let nearestUpcomingIdx = -1;
         let minDist = Infinity;
+        // GTFS-RT only sends updates for some stops; a delay carries forward to later
+        // stops until the next explicit update (per the GTFS-RT propagation rules)
+        let propagatedDelay = null;
 
         const stops = stopResult.rows.map((s, idx) => {
             const [h, m, sec] = s.departure_time.split(':').map(Number);
@@ -992,11 +1003,22 @@ app.get('/api/trip-stops', async (req, res) => {
             scheduledUtc.setUTCHours(h - 10, m, sec);
 
             let estimatedUtc = scheduledUtc;
+            let isRealtime = false;
             const stu = stopTimeUpdateMap.get(s.stop_sequence);
-            if (stu?.departure?.time) {
-                let ts = stu.departure.time;
+            const event = stu?.departure?.time ? stu.departure : stu?.arrival;
+            if (event?.time) {
+                let ts = event.time;
                 if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
                 estimatedUtc = new Date(ts * 1000);
+                propagatedDelay = Math.round((estimatedUtc - scheduledUtc) / 1000);
+                isRealtime = true;
+            } else if (event?.delay != null) {
+                propagatedDelay = event.delay;
+                estimatedUtc = new Date(scheduledUtc.getTime() + propagatedDelay * 1000);
+                isRealtime = true;
+            } else if (propagatedDelay != null) {
+                estimatedUtc = new Date(scheduledUtc.getTime() + propagatedDelay * 1000);
+                isRealtime = true;
             }
 
             const secondsUntil = Math.round((estimatedUtc - syncNow) / 1000);
@@ -1013,6 +1035,7 @@ app.get('/api/trip-stops', async (req, res) => {
             return {
                 stopId: s.stop_id,
                 stopName: s.stop_name,
+                stopSequence: s.stop_sequence,
                 lat: parseFloat(s.lat),
                 lon: parseFloat(s.lon),
                 scheduledTime,
@@ -1020,7 +1043,9 @@ app.get('/api/trip-stops', async (req, res) => {
                 estimatedUtc: estimatedUtc.toISOString(),
                 secondsUntil,
                 isUpcoming,
-                isNearest: false
+                isNearest: false,
+                isRealtime,
+                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null
             };
         });
 
@@ -1038,6 +1063,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 routeId: tripInfo.route_id,
                 routeShortName: tripInfo.route_short_name,
                 routeColor: tripInfo.route_color,
+                routeTextColor: tripInfo.route_text_color,
                 routeType: tripInfo.route_type,
                 headsign: tripInfo.trip_headsign,
                 directionId: tripInfo.direction_id
@@ -1109,24 +1135,46 @@ app.get('/api/next-trips', async (req, res) => {
             const [h, m, sec] = row.departure_time.split(':').map(Number);
             const scheduledUtc = new Date(Date.UTC(year, month, day));
             scheduledUtc.setUTCHours(h - 10, m, sec);
-            const secondsUntil = Math.round((scheduledUtc - syncNow) / 1000);
-            if (secondsUntil < -60) continue;
 
-            const scheduledTime = formatBrisbane(scheduledUtc);
-            let estimatedTime = null;
-
+            // Live estimate for this stop: its own update, else the latest earlier stop's delay
+            let estimatedUtc = scheduledUtc;
+            let isRealtime = false;
             const stopUpdates = liveDataMap.get(row.trip_id);
             if (stopUpdates) {
-                const stu = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
-                if (stu?.departure?.time) {
-                    let ts = stu.departure.time;
+                const own = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
+                const ownEvent = own?.departure?.time ? own.departure : own?.arrival;
+                if (ownEvent?.time) {
+                    let ts = ownEvent.time;
                     if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-                    const estTime = formatBrisbane(new Date(ts * 1000));
-                    if (estTime !== scheduledTime) estimatedTime = estTime;
+                    estimatedUtc = new Date(ts * 1000);
+                    isRealtime = true;
+                } else {
+                    const prior = stopUpdates
+                        .filter(u => u.stopSequence < row.stop_sequence)
+                        .sort((a, b) => b.stopSequence - a.stopSequence)[0];
+                    const delay = prior?.departure?.delay ?? prior?.arrival?.delay;
+                    if (delay != null) {
+                        estimatedUtc = new Date(scheduledUtc.getTime() + delay * 1000);
+                        isRealtime = true;
+                    }
                 }
             }
 
-            trips.push({ tripId: row.trip_id, scheduledTime, estimatedTime });
+            // Filter on the live time so a late bus isn't dropped once its scheduled time passes
+            const secondsUntil = Math.round((estimatedUtc - syncNow) / 1000);
+            if (secondsUntil < -60) continue;
+
+            const scheduledTime = formatBrisbane(scheduledUtc);
+            const estTime = formatBrisbane(estimatedUtc);
+
+            trips.push({
+                tripId: row.trip_id,
+                scheduledTime,
+                estimatedTime: estTime !== scheduledTime ? estTime : null,
+                departureUtc: estimatedUtc.toISOString(),
+                isRealtime,
+                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null
+            });
         }
 
         res.json({ trips });
