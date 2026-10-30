@@ -77,6 +77,55 @@ function haversineMeters(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// --- Vehicle heading from the trip's shape ------------------------------------
+// Translink's VehiclePositions feed sends no bearing, so derive it: snap the vehicle onto
+// the trip's shape (points in travel order) and take the direction of that segment.
+// Works from a single fix, so it is right even when the bus is stopped.
+const MAX_OFF_SHAPE_M = 150;   // further than this from the route: don't guess a direction
+
+function headingAlongShape(points, lat, lon, nextStop) {
+    if (!points || points.length < 2 || typeof lat !== 'number' || typeof lon !== 'number') return null;
+    // Local equirectangular projection around the vehicle (metres); plenty accurate at city scale
+    const mPerDegLat = 111_320, mPerDegLon = 111_320 * Math.cos(lat * Math.PI / 180);
+    const xy = ([pLat, pLon]) => [(pLon - lon) * mPerDegLon, (pLat - lat) * mPerDegLat];
+    const project = (px, py, ax, ay, bx, by) => {
+        const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+        const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
+        const qx = ax + t * dx, qy = ay + t * dy;
+        return { t, dist: Math.hypot(px - qx, py - qy), len: Math.sqrt(len2) };
+    };
+
+    const segs = [];
+    let along = 0;
+    for (let i = 0; i + 1 < points.length; i++) {
+        const [ax, ay] = xy(points[i]), [bx, by] = xy(points[i + 1]);
+        const p = project(0, 0, ax, ay, bx, by);
+        if (p.len > 0.5) segs.push({ ax, ay, bx, by, dist: p.dist, along: along + p.t * p.len });
+        along += p.len;
+    }
+    if (!segs.length) return null;
+    let best = segs.reduce((a, b) => (b.dist < a.dist ? b : a));
+    if (best.dist > MAX_OFF_SHAPE_M) return null;
+
+    // Shapes that pass the same street twice (loops, out-and-back): among near-equal
+    // matches, prefer the one just before the stop the vehicle is heading to
+    if (nextStop) {
+        const [sx, sy] = xy(nextStop);
+        let stopAlong = null, stopDist = Infinity, acc = 0;
+        for (let i = 0; i + 1 < points.length; i++) {
+            const [ax, ay] = xy(points[i]), [bx, by] = xy(points[i + 1]);
+            const p = project(sx, sy, ax, ay, bx, by);
+            if (p.dist < stopDist) { stopDist = p.dist; stopAlong = acc + p.t * p.len; }
+            acc += p.len;
+        }
+        const before = segs.filter(s => s.dist <= best.dist + 25 && s.along <= stopAlong + 30);
+        if (before.length) best = before.reduce((a, b) => (b.along > a.along ? b : a));
+    }
+
+    const heading = (Math.atan2(best.bx - best.ax, best.by - best.ay) * 180 / Math.PI + 360) % 360;
+    return { heading: Math.round(heading), offShapeM: Math.round(best.dist) };
+}
+
 // Load the GTFS-realtime schema once when the server starts
 let gtfsRealtime;
 protobuf.load(path.join(__dirname, 'gtfs-realtime.proto')).then((root) => {
@@ -753,7 +802,7 @@ app.get('/api/stop-live', async (req, res) => {
             SELECT
                 st.trip_id, st.stop_id, st.stop_sequence, st.departure_time,
                 t.shape_id,
-                r.route_short_name, r.route_color, r.route_type,
+                r.route_short_name, r.route_color, r.route_text_color, r.route_type,
                 ST_Y(s.location::geometry) AS stop_lat,
                 ST_X(s.location::geometry) AS stop_lon
             FROM stop_times st
@@ -802,6 +851,7 @@ app.get('/api/stop-live', async (req, res) => {
                 bearing: v.position.bearing ?? 0,
                 currentStopSequence: v.currentStopSequence ?? 0,
             };
+            // (heading is filled in per trip below, once its shape is loaded)
         }
 
         // For each upcoming trip: get shape, split at stop, attach vehicle
@@ -815,6 +865,7 @@ app.get('/api/stop-live', async (req, res) => {
 
             let shapeBefore = [];
             let shapeAfter = [];
+            let shapePoints = [];
 
             if (shapeRows.length > 0) {
                 try {
@@ -839,10 +890,18 @@ app.get('/api/stop-live', async (req, res) => {
                     }
                     shapeBefore = points.slice(0, splitIdx + 1);
                     shapeAfter = points.slice(splitIdx);
+                    shapePoints = points;
                 } catch { /* leave empty */ }
             }
 
             const liveVehicle = vehicleByTrip[row.trip_id] ?? null;
+            // Direction of travel from the shape (feed bearing if Translink ever sends one)
+            let heading = null;
+            if (liveVehicle) {
+                heading = liveVehicle.bearing
+                    ? { heading: liveVehicle.bearing }
+                    : headingAlongShape(shapePoints, liveVehicle.lat, liveVehicle.lon);
+            }
             const hasPassed = liveVehicle
                 ? liveVehicle.currentStopSequence > row.stop_sequence
                 : false;
@@ -851,12 +910,15 @@ app.get('/api/stop-live', async (req, res) => {
                 tripId: row.trip_id,
                 routeShortName: row.route_short_name ?? '',
                 routeColor: row.route_color ?? null,
+                routeTextColor: row.route_text_color ?? null,
+                routeType: row.route_type ?? null,
                 shapeBefore,
                 shapeAfter,
                 vehicle: liveVehicle ? {
                     lat: liveVehicle.lat,
                     lon: liveVehicle.lon,
-                    bearing: liveVehicle.bearing,
+                    bearing: heading ? heading.heading : 0,
+                    headingKnown: Boolean(heading),
                 } : null,
                 hasPassed,
             };
@@ -1013,6 +1075,23 @@ app.get('/api/trip-stops', async (req, res) => {
                     if (geo.type === 'LineString') shape = geo.coordinates.map(toLatLon);
                     else if (geo.type === 'MultiLineString') shape = geo.coordinates.flat().map(toLatLon);
                 } catch {}
+            }
+        }
+
+        // Direction of travel. The feed's bearing is used if Translink ever sends one;
+        // otherwise derive it from the shape, using the stop the vehicle is heading to
+        // to pick the right pass on loop/out-and-back shapes.
+        if (vehicle) {
+            const feedBearing = vp?.position?.bearing;
+            if (feedBearing) {
+                vehicle.bearing = feedBearing;
+                vehicle.headingKnown = true;
+            } else {
+                const next = stopResult.rows.find(s => s.stop_sequence === vehicle.currentStopSequence);
+                const h = headingAlongShape(shape, vehicle.lat, vehicle.lon,
+                    next ? [parseFloat(next.lat), parseFloat(next.lon)] : null);
+                vehicle.bearing = h ? h.heading : 0;
+                vehicle.headingKnown = Boolean(h);
             }
         }
 
