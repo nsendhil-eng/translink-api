@@ -633,6 +633,28 @@ app.get('/api/stops-near-me', async (req, res) => {
     }
     query += ` ORDER BY ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) LIMIT 25;`;
     const { rows } = await pool.query(query, queryParams);
+
+    // A station is one place: if any of its stops is in range, include all of them. Its
+    // bus bays (e.g. rail replacement buses at "Auchenflower station - Auchenflower Tce")
+    // can sit just outside the radius while the platforms are inside it.
+    const parents = [...new Set(rows.map(r => r.parent_station).filter(Boolean))];
+    if (parents.length) {
+      const have = new Set(rows.map(r => r.id));
+      const { rows: siblings } = await pool.query(`
+        SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
+               parent_stop.stop_name AS parent_station_name, ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography)::numeric)::int AS distance_m,
+               ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
+        FROM stops AS s
+        LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
+        WHERE s.parent_station = ANY($3)
+      `, [lon, lat, parents]);
+      for (const s of siblings) {
+        if (have.has(s.id)) continue;
+        if (typeFilter && typeFilter.length && !(s.route_types || []).some(t => typeFilter.includes(t))) continue;
+        rows.push(s);
+      }
+      rows.sort((a, b) => a.distance_m - b.distance_m);
+    }
     res.json(rows);
   } catch (error) {
     console.error('Geospatial query failed:', error);
@@ -1389,6 +1411,46 @@ const ALERT_UPCOMING_S = 24 * 3600;
 // (e.g. "9:07pm … delayed up to 10 minutes" still open two days later)
 const OPEN_DELAY_MAX_S = 12 * 3600;
 
+// When an alert applies (now, or within 24 h as "upcoming") and how much it matters;
+// null if it's not relevant at this time
+function alertWindow(a, now) {
+    const periods = a.periods.length ? a.periods : [{ start: null, end: null }];
+    const current = periods.find(p => (!p.start || p.start <= now) && (!p.end || p.end >= now));
+    const next = current ? null : periods
+        .filter(p => p.start && p.start > now && p.start - now <= ALERT_UPCOMING_S)
+        .sort((x, y) => x.start - y.start)[0];
+    const period = current || next;
+    if (!period) return null;
+    if (a.effect === 'SIGNIFICANT_DELAYS' && !period.end && period.start && now - period.start > OPEN_DELAY_MAX_S) return null;
+
+    const firstStart = Math.min(...a.periods.map(p => p.start || now));
+    const longRunning = now - firstStart > LONG_RUNNING_S;
+    const status = current ? 'active' : 'upcoming';
+    let priority = ALERT_EFFECT_RANK[a.effect] ?? 10;
+    if (longRunning) priority -= 50;      // background conditions never crowd out news
+    if (status === 'upcoming') priority -= 5;
+    return { status, priority, longRunning, period };
+}
+
+function alertJson(a, w, extra) {
+    return {
+        id: a.id,
+        header: a.header,
+        description: a.description,
+        url: a.url,
+        cause: a.cause,
+        effect: a.effect,
+        kind: ALERT_KIND[a.effect] || 'info',
+        status: w.status,
+        priority: w.priority,
+        longRunning: w.longRunning,
+        activeFrom: w.period.start ? new Date(w.period.start * 1000).toISOString() : null,
+        activeUntil: w.period.end ? new Date(w.period.end * 1000).toISOString() : null,
+        routeCount: a.routeCount,
+        ...extra
+    };
+}
+
 app.get('/api/alerts', async (req, res) => {
     const split = (v) => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
     const routeIds = split(req.query.route_ids);
@@ -1426,50 +1488,72 @@ app.get('/api/alerts', async (req, res) => {
         const now = Math.floor(Date.now() / 1000);
         const out = [];
         for (const a of alerts) {
-            // The period that applies now, else the next one within 24 h
-            const periods = a.periods.length ? a.periods : [{ start: null, end: null }];
-            const current = periods.find(p => (!p.start || p.start <= now) && (!p.end || p.end >= now));
-            const next = current ? null : periods
-                .filter(p => p.start && p.start > now && p.start - now <= ALERT_UPCOMING_S)
-                .sort((x, y) => x.start - y.start)[0];
-            const period = current || next;
-            if (!period) continue;
-            if (a.effect === 'SIGNIFICANT_DELAYS' && !period.end && period.start && now - period.start > OPEN_DELAY_MAX_S) continue;
+            const w = alertWindow(a, now);
+            if (!w) continue;
 
             const matchedRouteIds = [...a.routeCodes].filter(c => wantCodes.has(c)).map(c => wantCodes.get(c));
             const matchedStopIds = [...a.stopIds].filter(s => wantStops.has(s));
             if (!matchedRouteIds.length && !matchedStopIds.length) continue;
 
-            const firstStart = Math.min(...a.periods.map(p => p.start || now));
-            const longRunning = now - firstStart > LONG_RUNNING_S;
-            const status = current ? 'active' : 'upcoming';
-            let priority = ALERT_EFFECT_RANK[a.effect] ?? 10;
-            if (longRunning) priority -= 50;      // background conditions never crowd out news
-            if (status === 'upcoming') priority -= 5;
-
-            out.push({
-                id: a.id,
-                header: a.header,
-                description: a.description,
-                url: a.url,
-                cause: a.cause,
-                effect: a.effect,
-                kind: ALERT_KIND[a.effect] || 'info',
-                status,
-                priority,
-                longRunning,
-                activeFrom: period.start ? new Date(period.start * 1000).toISOString() : null,
-                activeUntil: period.end ? new Date(period.end * 1000).toISOString() : null,
-                matchedRouteIds,
-                matchedStopIds,
-                routeCount: a.routeCount
-            });
+            out.push(alertJson(a, w, { matchedRouteIds, matchedStopIds }));
         }
         out.sort((x, y) => y.priority - x.priority || (x.activeFrom || '').localeCompare(y.activeFrom || ''));
         res.json({ alerts: out });
     } catch (error) {
         console.error('alerts failed:', error);
         // Alerts are supplementary: never break the screen asking for them
+        res.json({ alerts: [] });
+    }
+});
+
+// GET /api/alerts/all?lat=X&lon=Y
+// Every current (and next-24 h) alert across the network, nearest first: distance is to the
+// closest stop the alert names or that a route it names serves. Alerts with nothing within
+// the scanned area (or no location given) come last, by importance.
+const ALERTS_NEARBY_SCAN = 6000;   // nearest stops considered when measuring alert distance
+
+app.get('/api/alerts/all', async (req, res) => {
+    const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+    const hasLocation = !isNaN(lat) && !isNaN(lon);
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        const [alerts, stopRows] = await Promise.all([
+            getAlerts().then(c => c.index),
+            hasLocation
+                // KNN on the location index: the nearest few thousand stops, closest first
+                ? pool.query(`
+                    SELECT stop_id, stop_name, NULLIF(parent_station, '') AS parent, servicing_routes,
+                           ROUND(ST_Distance(location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography))::int AS dist
+                    FROM stops
+                    ORDER BY location <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
+                    LIMIT $3
+                  `, [lon, lat, ALERTS_NEARBY_SCAN]).then(r => r.rows)
+                : Promise.resolve([])
+        ]);
+
+        const out = [];
+        for (const a of alerts) {
+            const w = alertWindow(a, now);
+            if (!w) continue;
+            // Rows are sorted by distance, so the first match is the nearest
+            const nearest = stopRows.find(s =>
+                a.stopIds.has(s.stop_id) || (s.parent && a.stopIds.has(s.parent)) ||
+                (s.servicing_routes && s.servicing_routes.split(', ').some(r => a.routeCodes.has(r))));
+            out.push(alertJson(a, w, {
+                distanceM: nearest ? nearest.dist : null,
+                nearestStopName: nearest ? nearest.stop_name : null,
+                // A few route codes for display; routeCount has the full total
+                routeCodes: [...a.routeCodes].sort().slice(0, 12)
+            }));
+        }
+        out.sort((x, y) => {
+            const dx = x.distanceM ?? Infinity, dy = y.distanceM ?? Infinity;
+            if (dx !== dy) return dx - dy;
+            return y.priority - x.priority;
+        });
+        res.json({ alerts: out });
+    } catch (error) {
+        console.error('alerts/all failed:', error);
         res.json({ alerts: [] });
     }
 });
