@@ -1079,7 +1079,7 @@ app.get('/api/trip-stops', async (req, res) => {
             if (!nearestStopId) return res.status(404).json({ error: 'No stops found for this route/direction.' });
 
             const { rows: tripRows } = await pool.query(`
-                SELECT st.trip_id, st.departure_time
+                SELECT st.trip_id, st.departure_time, st.stop_sequence
                 FROM stop_times st
                 JOIN trips t ON st.trip_id = t.trip_id
                 WHERE st.stop_id = $1
@@ -1092,12 +1092,34 @@ app.get('/api/trip-stops', async (req, res) => {
                 ORDER BY st.departure_time
             `, [nearestStopId, route_id, dirId, dateString]);
 
-            for (const tr of tripRows) {
+            // Pick the next trip by its LIVE time at the stop: a bus running 5 min late is
+            // still coming after its scheduled time has passed
+            const updates = (await getTripUpdates()).index;
+            const liveSecondsUntil = (tr) => {
                 const [h, m, sec] = tr.departure_time.split(':').map(Number);
                 const scheduledUtc = new Date(Date.UTC(year, month, day));
                 scheduledUtc.setUTCHours(h - 10, m, sec);
-                if ((scheduledUtc - syncNow) / 1000 > -60) { trip_id = tr.trip_id; break; }
+                let delay = 0;
+                const stus = updates.get(tr.trip_id)?.stopTimeUpdate;
+                if (stus) {
+                    const own = stus.find(u => u.stopSequence === tr.stop_sequence);
+                    const event = own?.departure?.time ? own.departure : own?.arrival;
+                    if (event?.time) {
+                        let ts = event.time; if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
+                        return Math.round(ts - syncNow / 1000);
+                    }
+                    const prior = stus.filter(u => u.stopSequence < tr.stop_sequence).sort((x, y) => y.stopSequence - x.stopSequence)[0];
+                    const d = prior?.departure?.delay ?? prior?.arrival?.delay;
+                    if (d != null) delay = typeof d === 'object' && d.toNumber ? d.toNumber() : Number(d);
+                }
+                return Math.round((scheduledUtc - syncNow) / 1000) + delay;
+            };
+            let best = null;
+            for (const tr of tripRows) {
+                const s = liveSecondsUntil(tr);
+                if (s > -60 && (best === null || s < best.s)) best = { s, id: tr.trip_id };
             }
+            if (best) trip_id = best.id;
             if (!trip_id) return res.status(404).json({ error: 'No upcoming trips found.' });
         }
 
