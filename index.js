@@ -61,174 +61,32 @@ const getTripUpdates = createFeedCache('TripUpdates', REALTIME_URL, 10_000, (fee
     return byTrip;
 });
 
-// trip_id -> VehiclePosition. Translink sometimes has two vehicles claiming one trip (e.g.
-// two ferries, one at stop 11 and one already past stop 16). Keep the one furthest behind
-// (fresh fixes first): wrongly treating a trip as passed hides a service that's still coming.
+// trip_id -> VehiclePosition; with duplicate vehicles on a trip, see preferVehicle
 const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITIONS_URL, 4_000, (feed) => {
     const nowS = Date.now() / 1000;
-    const fresh = (v) => {
-        let ts = v.timestamp;
-        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-        return !ts || nowS - ts <= 180;
-    };
     const byTrip = new Map();
     for (const e of feed.entity) {
         const v = e.vehicle;
         const id = v?.trip?.tripId;
-        if (!id) continue;
-        const cur = byTrip.get(id);
-        if (!cur) { byTrip.set(id, v); continue; }
-        const better = (fresh(v) && !fresh(cur)) ||
-            (fresh(v) === fresh(cur) && (v.currentStopSequence ?? Infinity) < (cur.currentStopSequence ?? Infinity));
-        if (better) byTrip.set(id, v);
+        if (id && preferVehicle(v, byTrip.get(id), nowS)) byTrip.set(id, v);
     }
     return byTrip;
 });
 
-function haversineMeters(lat1, lon1, lat2, lon2) {
-    const R = 6371000;
-    const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
-    const Δφ = (lat2 - lat1) * Math.PI / 180;
-    const Δλ = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-}
+const { haversineMeters, headingAlongShape, geojsonToLatLon } = require('./lib/geo');
+const {
+    STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
+    toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
+} = require('./lib/realtime');
+const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 
 // --- Service alerts --------------------------------------------------------------
 const ALERTS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/alerts';
 
-// Translink sends no severity, so rank by effect
-const ALERT_EFFECT_RANK = {
-    NO_SERVICE: 100, REDUCED_SERVICE: 90, SIGNIFICANT_DELAYS: 85, DETOUR: 80,
-    MODIFIED_SERVICE: 60, STOP_MOVED: 40, ACCESSIBILITY_ISSUE: 30, ADDITIONAL_SERVICE: 20
-};
-const ALERT_KIND = {
-    NO_SERVICE: 'disruption', REDUCED_SERVICE: 'disruption', SIGNIFICANT_DELAYS: 'disruption', DETOUR: 'disruption',
-    MODIFIED_SERVICE: 'change', STOP_MOVED: 'stopMoved', ACCESSIBILITY_ISSUE: 'accessibility', ADDITIONAL_SERVICE: 'extra'
-};
-const LONG_RUNNING_S = 30 * 24 * 3600;
-
-// Route ids carry a timetable version ("BRIP-4997"); alerts may name a newer version than
-// our database holds, so match on the code before it
-const routeCode = (id) => String(id).replace(/-\d+$/, '');
-
-// The feed's text is HTML flattened without spacing: "in briefStart: 11:30pm…OctoberEnd:".
-// Break where a lowercase letter, digit or punctuation runs straight into a capitalised
-// word — except Scottish/Irish name prefixes like MacGregor or McDowall.
-function cleanAlertText(text) {
-    if (!text) return '';
-    return text
-        .replace(/([a-z0-9.)!?:])(?=[A-Z][a-z])/g, (m, ch, offset, s) => {
-            const before = s.slice(Math.max(0, offset - 3), offset + 1);
-            return /(^|[^A-Za-z])(Mc|Mac)$/.test(before) ? ch : ch + '\n';
-        })
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-}
-
 const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
     const obj = gtfsRealtime.toObject(feed, { enums: String, longs: Number });
-    return (obj.entity || []).filter(e => e.alert).map(e => {
-        const a = e.alert;
-        const text = (t) => t?.translation?.find(x => !x.language || x.language.startsWith('en'))?.text || t?.translation?.[0]?.text || '';
-        const informed = a.informedEntity || [];
-        return {
-            id: e.id,
-            header: cleanAlertText(text(a.headerText)).replace(/\n/g, ' '),
-            description: cleanAlertText(text(a.descriptionText)),
-            url: text(a.url) || null,
-            cause: a.cause || 'UNKNOWN_CAUSE',
-            effect: a.effect || 'UNKNOWN_EFFECT',
-            periods: (a.activePeriod || []).map(p => ({ start: p.start || null, end: p.end || null })),
-            routeCodes: new Set(informed.filter(x => x.routeId).map(x => routeCode(x.routeId))),
-            stopIds: new Set(informed.filter(x => x.stopId).map(x => x.stopId)),
-            routeCount: informed.filter(x => x.routeId).length
-        };
-    });
+    return (obj.entity || []).filter(e => e.alert).map(parseAlertEntity);
 });
-
-// Translink drops stops a vehicle has passed from its TripUpdate. If a trip's updates
-// start after this stop, the service has already been and gone here - even when the
-// timetable says it's still due.
-// GTFS-RT enum values (decoded feeds keep numbers)
-const TRIP_CANCELED = 3;        // TripDescriptor.ScheduleRelationship.CANCELED
-const STOP_SKIPPED = 1;         // StopTimeUpdate.ScheduleRelationship.SKIPPED
-
-const isTripCancelled = (tripUpdate) => tripUpdate?.trip?.scheduleRelationship === TRIP_CANCELED;
-const isStopSkipped = (stopTimeUpdates, stopSequence) =>
-    (stopTimeUpdates || []).some(u => u.stopSequence === stopSequence && u.scheduleRelationship === STOP_SKIPPED);
-
-// The vehicle's own (fresh) position wins: Translink sometimes keeps sending predictions
-// for stops a vehicle has already left - e.g. a ferry heading to stop 5 still "due" at
-// stop 4, predicted later than stop 5 itself.
-function passedPerFeed(stopTimeUpdates, stopSequence, vehicle) {
-    if (vehicle?.currentStopSequence != null && vehicle.currentStopSequence > stopSequence) {
-        let ts = vehicle.timestamp;
-        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-        if (!ts || Date.now() / 1000 - ts <= VEHICLE_STALE_S) return true;
-    }
-    if (!stopTimeUpdates || !stopTimeUpdates.length) return false;
-    const first = Math.min(...stopTimeUpdates.map(u => u.stopSequence).filter(n => n != null));
-    return Number.isFinite(first) && stopSequence < first;
-}
-
-// A GPS fix older than this isn't "where the bus is": buses linked to a trip before it
-// starts (parked, on layover) keep reporting a position from long ago
-const VEHICLE_STALE_S = 180;
-const fixAgeSeconds = (ts) => {
-    if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-    return ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null;
-};
-
-// --- Vehicle heading from the trip's shape ------------------------------------
-// Translink's VehiclePositions feed sends no bearing, so derive it: snap the vehicle onto
-// the trip's shape (points in travel order) and take the direction of that segment.
-// Works from a single fix, so it is right even when the bus is stopped.
-const MAX_OFF_SHAPE_M = 150;   // further than this from the route: don't guess a direction
-
-function headingAlongShape(points, lat, lon, nextStop) {
-    if (!points || points.length < 2 || typeof lat !== 'number' || typeof lon !== 'number') return null;
-    // Local equirectangular projection around the vehicle (metres); plenty accurate at city scale
-    const mPerDegLat = 111_320, mPerDegLon = 111_320 * Math.cos(lat * Math.PI / 180);
-    const xy = ([pLat, pLon]) => [(pLon - lon) * mPerDegLon, (pLat - lat) * mPerDegLat];
-    const project = (px, py, ax, ay, bx, by) => {
-        const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
-        const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
-        const qx = ax + t * dx, qy = ay + t * dy;
-        return { t, dist: Math.hypot(px - qx, py - qy), len: Math.sqrt(len2) };
-    };
-
-    const segs = [];
-    let along = 0;
-    for (let i = 0; i + 1 < points.length; i++) {
-        const [ax, ay] = xy(points[i]), [bx, by] = xy(points[i + 1]);
-        const p = project(0, 0, ax, ay, bx, by);
-        if (p.len > 0.5) segs.push({ ax, ay, bx, by, dist: p.dist, along: along + p.t * p.len });
-        along += p.len;
-    }
-    if (!segs.length) return null;
-    let best = segs.reduce((a, b) => (b.dist < a.dist ? b : a));
-    if (best.dist > MAX_OFF_SHAPE_M) return null;
-
-    // Shapes that pass the same street twice (loops, out-and-back): among near-equal
-    // matches, prefer the one just before the stop the vehicle is heading to
-    if (nextStop) {
-        const [sx, sy] = xy(nextStop);
-        let stopAlong = null, stopDist = Infinity, acc = 0;
-        for (let i = 0; i + 1 < points.length; i++) {
-            const [ax, ay] = xy(points[i]), [bx, by] = xy(points[i + 1]);
-            const p = project(sx, sy, ax, ay, bx, by);
-            if (p.dist < stopDist) { stopDist = p.dist; stopAlong = acc + p.t * p.len; }
-            acc += p.len;
-        }
-        const before = segs.filter(s => s.dist <= best.dist + 25 && s.along <= stopAlong + 30);
-        if (before.length) best = before.reduce((a, b) => (b.along > a.along ? b : a));
-    }
-
-    const heading = (Math.atan2(best.bx - best.ax, best.by - best.ay) * 180 / Math.PI + 360) % 360;
-    return { heading: Math.round(heading), offShapeM: Math.round(best.dist) };
-}
 
 // Load the GTFS-realtime schema once when the server starts
 let gtfsRealtime;
@@ -724,12 +582,8 @@ app.get('/api/departures', async (req, res) => {
     const stopCodes = (req.query.stops || '001951,600284,600286').split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-        const now = new Date();
-        const timeZone = 'Australia/Brisbane';
-        const parts = new Intl.DateTimeFormat('en-AU', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long' }).formatToParts(now);
-        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
-        const dayOfWeek = findPart('weekday').toLowerCase();
-        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
+        const today = serviceDay();
+        const { dayOfWeek, dateString } = today;
 
         const staticQuery = `
             SELECT
@@ -759,70 +613,17 @@ app.get('/api/departures', async (req, res) => {
         const [tuCache, vpCache] = await Promise.all([getTripUpdates(), getVehiclePositions().catch(() => null)]);
         const tripUpdates = tuCache.index;
         const vehicles = vpCache?.index ?? new Map();
-        const liveDataMap = { get: (tripId) => tripUpdates.get(tripId)?.stopTimeUpdate };
-
         const synchronizedNow = new Date();
         const enrichedDepartures = scheduledDepartures.map(s => {
-            // --- ROBUST TIME CALCULATION LOGIC ---
-            const [h, m, sec] = s.departure_time.split(':').map(Number); // e.g., [25, 15, 35]
-
-            // 1. Create a date object for the service day in Brisbane time.
-            // The dateString is 'YYYYMMDD'.
-            const year = parseInt(dateString.substring(0, 4), 10);
-            const month = parseInt(dateString.substring(4, 6), 10) - 1; // Month is 0-indexed
-            const day = parseInt(dateString.substring(6, 8), 10);
-
-            // 2. Create a UTC date and then set the hours, minutes, seconds from GTFS.
-            // This correctly handles hours > 23, which roll over to the next day.
-            const scheduledUtc = new Date(Date.UTC(year, month, day));
-            scheduledUtc.setUTCHours(h - 10, m, sec); // Set time and adjust for Brisbane (UTC+10)
-            // --- END OF TIME LOGIC ---
-
-            const stopTimeUpdates = liveDataMap.get(s.trip_id);
+            const scheduled = scheduledUtc(today, s.departure_time);
+            const stopTimeUpdates = tripUpdates.get(s.trip_id)?.stopTimeUpdate;
             const cancelled = isTripCancelled(tripUpdates.get(s.trip_id));
             const skipped = !cancelled && isStopSkipped(stopTimeUpdates, s.stop_sequence);
             // A cancelled trip has no live progress, so the "passed" checks don't apply to it
             if (!cancelled && passedPerFeed(stopTimeUpdates, s.stop_sequence, vehicles.get(s.trip_id))) return null;
-            let expectedUtc = scheduledUtc.toISOString();
-            let isDelayed = false;
-            let isRealtime = false;
-            const toNum = (v) => (typeof v === 'object' && v?.toNumber) ? v.toNumber() : Number(v);
+            const live = liveStopTime(stopTimeUpdates, s.stop_sequence, scheduled);
+            const secondsUntil = Math.round((live.estimatedUtc - synchronizedNow) / 1000);
 
-            if (stopTimeUpdates) {
-                const stopUpdate = stopTimeUpdates.find(stu => stu.stopSequence === s.stop_sequence);
-                if (stopUpdate && stopUpdate.departure) {
-                    if (stopUpdate.departure.time) {
-                        // The 'time' object from protobufjs is a Long.js object.
-                        // We must convert it to a standard JavaScript number before using it.
-                        let departureTimestamp = stopUpdate.departure.time;
-                        if (typeof departureTimestamp === 'object' && typeof departureTimestamp.toNumber === 'function') {
-                            departureTimestamp = departureTimestamp.toNumber();
-                        }
-                        expectedUtc = new Date(departureTimestamp * 1000).toISOString();
-                        isRealtime = true;
-                    }
-                    // Use GTFS-RT delay field — positive value means explicitly delayed
-                    const rawDelay = stopUpdate.departure.delay;
-                    const delaySeconds = Number(toNum(rawDelay)) || 0;
-                    isDelayed = delaySeconds > 0;
-                    if (rawDelay != null) isRealtime = true;
-                } else if (!stopUpdate) {
-                    // No update for this stop: carry forward the latest earlier stop's delay
-                    // (GTFS-RT propagation), so countdowns past the next stop stay live
-                    const prior = stopTimeUpdates
-                        .filter(u => u.stopSequence < s.stop_sequence)
-                        .sort((a, b) => b.stopSequence - a.stopSequence)[0];
-                    const rawDelay = prior?.departure?.delay ?? prior?.arrival?.delay;
-                    if (rawDelay != null) {
-                        const delay = toNum(rawDelay);
-                        expectedUtc = new Date(scheduledUtc.getTime() + delay * 1000).toISOString();
-                        isDelayed = delay > 0;
-                        isRealtime = true;
-                    }
-                }
-            }
-            const secondsUntil = Math.round((new Date(expectedUtc) - synchronizedNow) / 1000);
-            
             let vehicleType = 'Train';
             if (s.route_type === 3) vehicleType = 'Bus';
             if (s.route_type === 4) vehicleType = 'Ferry';
@@ -837,15 +638,15 @@ app.get('/api/departures', async (req, res) => {
                 routeId: s.route_id,
                 directionId: s.direction_id,
                 headsign: s.trip_headsign,
-                scheduledDepartureUtc: scheduledUtc.toISOString(),
-                expectedDepartureUtc: (expectedUtc !== scheduledUtc.toISOString()) ? expectedUtc : null,
-                isDelayed: isDelayed,
+                scheduledDepartureUtc: scheduled.toISOString(),
+                expectedDepartureUtc: live.estimatedUtc.getTime() !== scheduled.getTime() ? live.estimatedUtc.toISOString() : null,
+                isDelayed: live.delaySeconds > 0,
                 // Additive: lets clients tell "live & on time" from "timetable only"
-                isRealtime,
+                isRealtime: live.isRealtime,
                 // Additive: trip cancelled, or this stop skipped (e.g. a diversion)
                 isCancelled: cancelled,
                 isSkipped: skipped,
-                delaySeconds: isRealtime ? Math.round((new Date(expectedUtc) - scheduledUtc) / 1000) : null,
+                delaySeconds: live.delaySeconds,
                 secondsUntilDeparture: secondsUntil,
                 routeLongName: s.route_long_name,
                 routeColor: s.route_color,
@@ -923,14 +724,8 @@ app.get('/api/stop-live', async (req, res) => {
     const stopIds = stopIdsParam.split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-        const now = new Date();
-        const timeZone = 'Australia/Brisbane';
-        const parts = new Intl.DateTimeFormat('en-AU', {
-            timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long'
-        }).formatToParts(now);
-        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
-        const dayOfWeek = findPart('weekday').toLowerCase();
-        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
+        const today = serviceDay();
+        const { dayOfWeek, dateString } = today;
 
         // Fetch all of today's trips for these stops (time filter done in JS to handle > 24h GTFS times)
         const { rows: allRows } = await pool.query(`
@@ -957,38 +752,15 @@ app.get('/api/stop-live', async (req, res) => {
         `, [stopIds, dateString]);
 
         // Convert GTFS departure_time to UTC, filter to upcoming, take first 2
-        const year = parseInt(dateString.substring(0, 4));
-        const month = parseInt(dateString.substring(4, 6)) - 1;
-        const day = parseInt(dateString.substring(6, 8));
         const synchronizedNow = new Date();
         const upcoming = allRows
-            .map(row => {
-                const [h, m, sec] = row.departure_time.split(':').map(Number);
-                const scheduledUtc = new Date(Date.UTC(year, month, day));
-                scheduledUtc.setUTCHours(h - 10, m, sec); // Brisbane = UTC+10
-                return { ...row, secondsUntil: Math.round((scheduledUtc - synchronizedNow) / 1000) };
-            })
+            .map(row => ({ ...row, secondsUntil: Math.round((scheduledUtc(today, row.departure_time) - synchronizedNow) / 1000) }))
             .filter(row => row.secondsUntil > -60)
             .slice(0, 2);
 
         if (upcoming.length === 0) return res.json({ trips: [] });
 
-        const vehiclePositions = (await getVehiclePositions()).feed;
-
-        // Build trip_id → vehicle map from GTFS-RT
-        const vehicleByTrip = {};
-        for (const entity of vehiclePositions.entity) {
-            const v = entity.vehicle;
-            if (!v?.position || !v?.trip?.tripId) continue;
-            vehicleByTrip[v.trip.tripId] = {
-                lat: v.position.latitude,
-                lon: v.position.longitude,
-                bearing: v.position.bearing ?? 0,
-                currentStopSequence: v.currentStopSequence ?? 0,
-                ageSeconds: fixAgeSeconds(v.timestamp),
-            };
-            // (heading is filled in per trip below, once its shape is loaded)
-        }
+        const vehiclesByTrip = (await getVehiclePositions()).index;
 
         // For each upcoming trip: get shape, split at stop, attach vehicle
         const trips = await Promise.all(upcoming.map(async (row) => {
@@ -999,38 +771,26 @@ app.get('/api/stop-live', async (req, res) => {
                 WHERE shape_id = $1
             `, [row.shape_id]);
 
-            let shapeBefore = [];
-            let shapeAfter = [];
-            let shapePoints = [];
-
-            if (shapeRows.length > 0) {
-                try {
-                    const geojson = JSON.parse(shapeRows[0].geojson);
-                    // GeoJSON is [lon, lat] — swap to [lat, lon] for the app
-                    const toLatLon = c => [c[1], c[0]];
-                    let points = [];
-                    if (geojson.type === 'LineString') {
-                        points = geojson.coordinates.map(toLatLon);
-                    } else if (geojson.type === 'MultiLineString') {
-                        points = geojson.coordinates.flat().map(toLatLon);
-                    }
-
-                    // Find shape point closest to the stop → split index
-                    const stopLat = parseFloat(row.stop_lat);
-                    const stopLon = parseFloat(row.stop_lon);
-                    let splitIdx = 0;
-                    let minDist = Infinity;
-                    for (let i = 0; i < points.length; i++) {
-                        const d = haversineMeters(stopLat, stopLon, points[i][0], points[i][1]);
-                        if (d < minDist) { minDist = d; splitIdx = i; }
-                    }
-                    shapeBefore = points.slice(0, splitIdx + 1);
-                    shapeAfter = points.slice(splitIdx);
-                    shapePoints = points;
-                } catch { /* leave empty */ }
+            // Split the shape at the point closest to the stop
+            const shapePoints = shapeRows.length > 0 ? geojsonToLatLon(shapeRows[0].geojson) : [];
+            const stopLat = parseFloat(row.stop_lat);
+            const stopLon = parseFloat(row.stop_lon);
+            let splitIdx = 0;
+            let minDist = Infinity;
+            for (let i = 0; i < shapePoints.length; i++) {
+                const d = haversineMeters(stopLat, stopLon, shapePoints[i][0], shapePoints[i][1]);
+                if (d < minDist) { minDist = d; splitIdx = i; }
             }
+            const shapeBefore = shapePoints.slice(0, splitIdx + 1);
+            const shapeAfter = shapePoints.slice(splitIdx);
 
-            const liveVehicle = vehicleByTrip[row.trip_id] ?? null;
+            const vp = vehiclesByTrip.get(row.trip_id);
+            const liveVehicle = vp?.position ? {
+                lat: vp.position.latitude,
+                lon: vp.position.longitude,
+                bearing: vp.position.bearing ?? 0,
+                ageSeconds: fixAgeSeconds(vp.timestamp),
+            } : null;
             // Direction of travel from the shape (feed bearing if Translink ever sends one)
             let heading = null;
             if (liveVehicle) {
@@ -1039,9 +799,7 @@ app.get('/api/stop-live', async (req, res) => {
                     : headingAlongShape(shapePoints, liveVehicle.lat, liveVehicle.lon);
             }
             // A stale fix can't tell us the trip has gone past this stop
-            const hasPassed = liveVehicle && !(liveVehicle.ageSeconds > VEHICLE_STALE_S)
-                ? liveVehicle.currentStopSequence > row.stop_sequence
-                : false;
+            const hasPassed = liveVehicle ? vehiclePassedStop(vp, row.stop_sequence) : false;
 
             return {
                 tripId: row.trip_id,
@@ -1057,7 +815,7 @@ app.get('/api/stop-live', async (req, res) => {
                     bearing: heading ? heading.heading : 0,
                     headingKnown: Boolean(heading),
                     ageSeconds: liveVehicle.ageSeconds,
-                    isStale: liveVehicle.ageSeconds != null && liveVehicle.ageSeconds > VEHICLE_STALE_S,
+                    isStale: !isFreshFix(vp.timestamp),
                 } : null,
                 hasPassed,
             };
@@ -1081,21 +839,9 @@ app.get('/api/trip-stops', async (req, res) => {
     const hasLocation = !isNaN(userLat) && !isNaN(userLon);
 
     try {
-        const now = new Date();
-        const timeZone = 'Australia/Brisbane';
-        const parts = new Intl.DateTimeFormat('en-AU', {
-            timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long'
-        }).formatToParts(now);
-        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
-        const dayOfWeek = findPart('weekday').toLowerCase();
-        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
-        const year = parseInt(dateString.substring(0, 4));
-        const month = parseInt(dateString.substring(4, 6)) - 1;
-        const day = parseInt(dateString.substring(6, 8));
+        const today = serviceDay();
+        const { dayOfWeek, dateString } = today;
         const syncNow = new Date();
-
-        const formatBrisbane = (utcDate) =>
-            new Intl.DateTimeFormat('en-AU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(utcDate);
 
         // If route_id given without trip_id: find nearest stop on route, then next upcoming trip
         if (!trip_id && route_id) {
@@ -1147,23 +893,8 @@ app.get('/api/trip-stops', async (req, res) => {
             // still coming after its scheduled time has passed
             const updates = (await getTripUpdates()).index;
             const liveSecondsUntil = (tr) => {
-                const [h, m, sec] = tr.departure_time.split(':').map(Number);
-                const scheduledUtc = new Date(Date.UTC(year, month, day));
-                scheduledUtc.setUTCHours(h - 10, m, sec);
-                let delay = 0;
-                const stus = updates.get(tr.trip_id)?.stopTimeUpdate;
-                if (stus) {
-                    const own = stus.find(u => u.stopSequence === tr.stop_sequence);
-                    const event = own?.departure?.time ? own.departure : own?.arrival;
-                    if (event?.time) {
-                        let ts = event.time; if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-                        return Math.round(ts - syncNow / 1000);
-                    }
-                    const prior = stus.filter(u => u.stopSequence < tr.stop_sequence).sort((x, y) => y.stopSequence - x.stopSequence)[0];
-                    const d = prior?.departure?.delay ?? prior?.arrival?.delay;
-                    if (d != null) delay = typeof d === 'object' && d.toNumber ? d.toNumber() : Number(d);
-                }
-                return Math.round((scheduledUtc - syncNow) / 1000) + delay;
+                const live = liveStopTime(updates.get(tr.trip_id)?.stopTimeUpdate, tr.stop_sequence, scheduledUtc(today, tr.departure_time));
+                return Math.round((live.estimatedUtc - syncNow) / 1000);
             };
             let best = null;
             for (const tr of tripRows) {
@@ -1207,15 +938,13 @@ app.get('/api/trip-stops', async (req, res) => {
         let vehicle = null;
         const vp = vehiclePositions?.index.get(trip_id);
         if (vp?.position) {
-            let ts = vp.timestamp;
-            if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
             vehicle = {
                 lat: vp.position.latitude,
                 lon: vp.position.longitude,
                 bearing: vp.position.bearing || 0,
                 // How old the GPS fix is — clients show "40s ago"
-                ageSeconds: ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null,
-                isStale: ts ? (Date.now() / 1000 - ts) > VEHICLE_STALE_S : false,
+                ageSeconds: fixAgeSeconds(vp.timestamp),
+                isStale: !isFreshFix(vp.timestamp),
                 // Lets clients place the vehicle between the right stops
                 currentStopSequence: vp.currentStopSequence ?? null,
                 // GTFS-RT VehicleStopStatus: 0 INCOMING_AT, 1 STOPPED_AT, 2 IN_TRANSIT_TO
@@ -1230,14 +959,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 SELECT ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00008)) AS geojson
                 FROM route_shapes WHERE shape_id = $1
             `, [tripInfo.shape_id]);
-            if (shapeRows[0]?.geojson) {
-                try {
-                    const geo = JSON.parse(shapeRows[0].geojson);
-                    const toLatLon = c => [c[1], c[0]];
-                    if (geo.type === 'LineString') shape = geo.coordinates.map(toLatLon);
-                    else if (geo.type === 'MultiLineString') shape = geo.coordinates.flat().map(toLatLon);
-                } catch {}
-            }
+            if (shapeRows[0]?.geojson) shape = geojsonToLatLon(shapeRows[0].geojson);
         }
 
         // Direction of travel. The feed's bearing is used if Translink ever sends one;
@@ -1265,26 +987,22 @@ app.get('/api/trip-stops', async (req, res) => {
         let propagatedDelay = null;
 
         const stops = stopResult.rows.map((s, idx) => {
-            const [h, m, sec] = s.departure_time.split(':').map(Number);
-            const scheduledUtc = new Date(Date.UTC(year, month, day));
-            scheduledUtc.setUTCHours(h - 10, m, sec);
-
-            let estimatedUtc = scheduledUtc;
+            const scheduled = scheduledUtc(today, s.departure_time);
+            let estimatedUtc = scheduled;
             let isRealtime = false;
-            const stu = stopTimeUpdateMap.get(s.stop_sequence);
-            const event = stu?.departure?.time ? stu.departure : stu?.arrival;
-            if (event?.time) {
-                let ts = event.time;
-                if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-                estimatedUtc = new Date(ts * 1000);
-                propagatedDelay = Math.round((estimatedUtc - scheduledUtc) / 1000);
+            // Walking the whole trip, so a delay can be carried forward even from a stop
+            // that only gave a predicted time (liveStopTime can't, for a single stop)
+            const event = stopEvent(stopTimeUpdateMap.get(s.stop_sequence));
+            if (event?.time != null) {
+                estimatedUtc = new Date(toNum(event.time) * 1000);
+                propagatedDelay = Math.round((estimatedUtc - scheduled) / 1000);
                 isRealtime = true;
             } else if (event?.delay != null) {
-                propagatedDelay = event.delay;
-                estimatedUtc = new Date(scheduledUtc.getTime() + propagatedDelay * 1000);
+                propagatedDelay = toNum(event.delay);
+                estimatedUtc = new Date(scheduled.getTime() + propagatedDelay * 1000);
                 isRealtime = true;
             } else if (propagatedDelay != null) {
-                estimatedUtc = new Date(scheduledUtc.getTime() + propagatedDelay * 1000);
+                estimatedUtc = new Date(scheduled.getTime() + propagatedDelay * 1000);
                 isRealtime = true;
             }
 
@@ -1298,7 +1016,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 if (dist < minDist) { minDist = dist; nearestUpcomingIdx = idx; }
             }
 
-            const scheduledTime = formatBrisbane(scheduledUtc);
+            const scheduledTime = formatBrisbane(scheduled);
             const estimatedTime = formatBrisbane(estimatedUtc);
 
             return {
@@ -1316,7 +1034,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 // Additive: this stop is skipped on this trip (e.g. a diversion)
                 isSkipped: (stopTimeUpdateMap.get(s.stop_sequence)?.scheduleRelationship) === STOP_SKIPPED,
                 isRealtime,
-                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null
+                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduled) / 1000) : null
             };
         });
 
@@ -1361,21 +1079,9 @@ app.get('/api/next-trips', async (req, res) => {
     }
 
     try {
-        const now = new Date();
-        const timeZone = 'Australia/Brisbane';
-        const parts = new Intl.DateTimeFormat('en-AU', {
-            timeZone, year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'long'
-        }).formatToParts(now);
-        const findPart = (type) => parts.find(p => p.type === type)?.value || '';
-        const dayOfWeek = findPart('weekday').toLowerCase();
-        const dateString = `${findPart('year')}${findPart('month')}${findPart('day')}`;
-        const year = parseInt(dateString.substring(0, 4));
-        const month = parseInt(dateString.substring(4, 6)) - 1;
-        const day = parseInt(dateString.substring(6, 8));
+        const today = serviceDay();
+        const { dayOfWeek, dateString } = today;
         const syncNow = new Date();
-
-        const formatBrisbane = (utcDate) =>
-            new Intl.DateTimeFormat('en-AU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(utcDate);
 
         const [stopsResult, tripUpdates, vpCache] = await Promise.all([
             pool.query(`
@@ -1401,42 +1107,18 @@ app.get('/api/next-trips', async (req, res) => {
         const trips = [];
         for (const row of stopsResult.rows) {
             if (trips.length >= 5) break;
-            const [h, m, sec] = row.departure_time.split(':').map(Number);
-            const scheduledUtc = new Date(Date.UTC(year, month, day));
-            scheduledUtc.setUTCHours(h - 10, m, sec);
-
-            // Live estimate for this stop: its own update, else the latest earlier stop's delay
-            let estimatedUtc = scheduledUtc;
-            let isRealtime = false;
+            const scheduled = scheduledUtc(today, row.departure_time);
             const stopUpdates = liveDataMap.get(row.trip_id);
             const tripCancelled = isTripCancelled(tripUpdates.index.get(row.trip_id));
             const stopSkipped = !tripCancelled && isStopSkipped(stopUpdates, row.stop_sequence);
             if (!tripCancelled && passedPerFeed(stopUpdates, row.stop_sequence, vpCache?.index.get(row.trip_id))) continue;
-            if (stopUpdates) {
-                const own = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
-                const ownEvent = own?.departure?.time ? own.departure : own?.arrival;
-                if (ownEvent?.time) {
-                    let ts = ownEvent.time;
-                    if (typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
-                    estimatedUtc = new Date(ts * 1000);
-                    isRealtime = true;
-                } else {
-                    const prior = stopUpdates
-                        .filter(u => u.stopSequence < row.stop_sequence)
-                        .sort((a, b) => b.stopSequence - a.stopSequence)[0];
-                    const delay = prior?.departure?.delay ?? prior?.arrival?.delay;
-                    if (delay != null) {
-                        estimatedUtc = new Date(scheduledUtc.getTime() + delay * 1000);
-                        isRealtime = true;
-                    }
-                }
-            }
+            const { estimatedUtc, isRealtime, delaySeconds } = liveStopTime(stopUpdates, row.stop_sequence, scheduled);
 
             // Filter on the live time so a late bus isn't dropped once its scheduled time passes
             const secondsUntil = Math.round((estimatedUtc - syncNow) / 1000);
             if (secondsUntil < -60) continue;
 
-            const scheduledTime = formatBrisbane(scheduledUtc);
+            const scheduledTime = formatBrisbane(scheduled);
             const estTime = formatBrisbane(estimatedUtc);
 
             trips.push({
@@ -1445,7 +1127,7 @@ app.get('/api/next-trips', async (req, res) => {
                 estimatedTime: estTime !== scheduledTime ? estTime : null,
                 departureUtc: estimatedUtc.toISOString(),
                 isRealtime,
-                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null,
+                delaySeconds,
                 isCancelled: tripCancelled || stopSkipped
             });
         }
@@ -1502,51 +1184,6 @@ app.get('/api/plan-delays', async (req, res) => {
 // Active Translink service alerts (plus those starting within 24 h, as "upcoming") that
 // affect any of the given routes or stops, most important first. Stop matching includes
 // the stop's parent station and sibling platforms.
-const ALERT_UPCOMING_S = 24 * 3600;
-// Delay alerts describe a single incident; Translink sometimes never closes them
-// (e.g. "9:07pm … delayed up to 10 minutes" still open two days later)
-const OPEN_DELAY_MAX_S = 12 * 3600;
-
-// When an alert applies (now, or within 24 h as "upcoming") and how much it matters;
-// null if it's not relevant at this time
-function alertWindow(a, now) {
-    const periods = a.periods.length ? a.periods : [{ start: null, end: null }];
-    const current = periods.find(p => (!p.start || p.start <= now) && (!p.end || p.end >= now));
-    const next = current ? null : periods
-        .filter(p => p.start && p.start > now && p.start - now <= ALERT_UPCOMING_S)
-        .sort((x, y) => x.start - y.start)[0];
-    const period = current || next;
-    if (!period) return null;
-    if (a.effect === 'SIGNIFICANT_DELAYS' && !period.end && period.start && now - period.start > OPEN_DELAY_MAX_S) return null;
-
-    const firstStart = Math.min(...a.periods.map(p => p.start || now));
-    const longRunning = now - firstStart > LONG_RUNNING_S;
-    const status = current ? 'active' : 'upcoming';
-    let priority = ALERT_EFFECT_RANK[a.effect] ?? 10;
-    if (longRunning) priority -= 50;      // background conditions never crowd out news
-    if (status === 'upcoming') priority -= 5;
-    return { status, priority, longRunning, period };
-}
-
-function alertJson(a, w, extra) {
-    return {
-        id: a.id,
-        header: a.header,
-        description: a.description,
-        url: a.url,
-        cause: a.cause,
-        effect: a.effect,
-        kind: ALERT_KIND[a.effect] || 'info',
-        status: w.status,
-        priority: w.priority,
-        longRunning: w.longRunning,
-        activeFrom: w.period.start ? new Date(w.period.start * 1000).toISOString() : null,
-        activeUntil: w.period.end ? new Date(w.period.end * 1000).toISOString() : null,
-        routeCount: a.routeCount,
-        ...extra
-    };
-}
-
 app.get('/api/alerts', async (req, res) => {
     const split = (v) => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
     const routeIds = split(req.query.route_ids);

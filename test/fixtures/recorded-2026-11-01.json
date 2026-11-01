@@ -1,0 +1,675 @@
+{
+ "recordedAt": 1793524085,
+ "note": "Excerpts of Translink SEQ GTFS-RT feeds recorded 2026-11-01 ~19:08 AEST (decoded, longs as numbers)",
+ "terminusTrip": {
+  "trip": {
+   "tripId": "39413745-BT 26_27-44489",
+   "startTime": "19:21:00",
+   "startDate": "20261101",
+   "scheduleRelationship": 0,
+   "routeId": "411-5146"
+  },
+  "stopTimeUpdate": [
+   {
+    "stopSequence": 1,
+    "arrival": {
+     "delay": -799,
+     "time": 1793524061,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793524860,
+     "uncertainty": 30
+    },
+    "stopId": "5",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 2,
+    "arrival": {
+     "delay": -10,
+     "time": 1793524970,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -10,
+     "time": 1793524970,
+     "uncertainty": 30
+    },
+    "stopId": "7",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 3,
+    "arrival": {
+     "delay": 15,
+     "time": 1793525055,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 15,
+     "time": 1793525055,
+     "uncertainty": 30
+    },
+    "stopId": "10",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 4,
+    "arrival": {
+     "delay": 8,
+     "time": 1793525228,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 8,
+     "time": 1793525228,
+     "uncertainty": 30
+    },
+    "stopId": "272",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 5,
+    "arrival": {
+     "delay": 20,
+     "time": 1793525300,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 20,
+     "time": 1793525300,
+     "uncertainty": 30
+    },
+    "stopId": "267",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 6,
+    "arrival": {
+     "delay": 40,
+     "time": 1793525380,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 40,
+     "time": 1793525380,
+     "uncertainty": 30
+    },
+    "stopId": "1944",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 7,
+    "arrival": {
+     "delay": 37,
+     "time": 1793525437,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 37,
+     "time": 1793525437,
+     "uncertainty": 30
+    },
+    "stopId": "1946",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 8,
+    "arrival": {
+     "delay": 83,
+     "time": 1793525543,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 83,
+     "time": 1793525543,
+     "uncertainty": 30
+    },
+    "stopId": "1894",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 9,
+    "arrival": {
+     "delay": 53,
+     "time": 1793525573,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 53,
+     "time": 1793525573,
+     "uncertainty": 30
+    },
+    "stopId": "10384",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 10,
+    "arrival": {
+     "delay": 18,
+     "time": 1793525598,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 18,
+     "time": 1793525598,
+     "uncertainty": 30
+    },
+    "stopId": "1855",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 11,
+    "arrival": {
+     "delay": 51,
+     "time": 1793525631,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 51,
+     "time": 1793525631,
+     "uncertainty": 30
+    },
+    "stopId": "1840",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 12,
+    "arrival": {
+     "delay": 10,
+     "time": 1793525650,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 10,
+     "time": 1793525650,
+     "uncertainty": 30
+    },
+    "stopId": "1838",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 13,
+    "arrival": {
+     "delay": -15,
+     "time": 1793525685,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -15,
+     "time": 1793525685,
+     "uncertainty": 30
+    },
+    "stopId": "1835",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 14,
+    "arrival": {
+     "delay": -24,
+     "time": 1793525736,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -24,
+     "time": 1793525736,
+     "uncertainty": 30
+    },
+    "stopId": "1833",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 15,
+    "arrival": {
+     "delay": -33,
+     "time": 1793525787,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -33,
+     "time": 1793525787,
+     "uncertainty": 30
+    },
+    "stopId": "1830",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 16,
+    "arrival": {
+     "delay": -49,
+     "time": 1793525831,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -49,
+     "time": 1793525831,
+     "uncertainty": 30
+    },
+    "stopId": "1828",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 17,
+    "arrival": {
+     "delay": -56,
+     "time": 1793525884,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -56,
+     "time": 1793525884,
+     "uncertainty": 30
+    },
+    "stopId": "1826",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 18,
+    "arrival": {
+     "delay": -95,
+     "time": 1793525905,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -95,
+     "time": 1793525905,
+     "uncertainty": 30
+    },
+    "stopId": "1824",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 19,
+    "arrival": {
+     "delay": -133,
+     "time": 1793525927,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -133,
+     "time": 1793525927,
+     "uncertainty": 30
+    },
+    "stopId": "10432",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 20,
+    "arrival": {
+     "delay": -118,
+     "time": 1793525942,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -118,
+     "time": 1793525942,
+     "uncertainty": 30
+    },
+    "stopId": "1820",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 21,
+    "arrival": {
+     "delay": -151,
+     "time": 1793525969,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -151,
+     "time": 1793525969,
+     "uncertainty": 30
+    },
+    "stopId": "1818",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 22,
+    "arrival": {
+     "delay": -157,
+     "time": 1793526023,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -157,
+     "time": 1793526023,
+     "uncertainty": 30
+    },
+    "stopId": "1814",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 23,
+    "arrival": {
+     "delay": -181,
+     "time": 1793526059,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": -181,
+     "time": 1793526059,
+     "uncertainty": 30
+    },
+    "stopId": "1811",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 24,
+    "arrival": {
+     "delay": -237,
+     "time": 1793526123,
+     "uncertainty": 30
+    },
+    "stopId": "1746",
+    "scheduleRelationship": 0
+   }
+  ],
+  "vehicle": {
+   "id": "A7393ED51E387246BB3D6249943091E8_7149"
+  },
+  "timestamp": 1793524055
+ },
+ "underwayTrip": {
+  "trip": {
+   "tripId": "39550916-QR 26_27-44526-DG54",
+   "startTime": "18:34:00",
+   "startDate": "20261101",
+   "scheduleRelationship": 0,
+   "routeId": "BDVL-5212"
+  },
+  "stopTimeUpdate": [
+   {
+    "stopSequence": 11,
+    "arrival": {
+     "delay": -73,
+     "time": 1793524067,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793524140,
+     "uncertainty": 30
+    },
+    "stopId": "600006",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 12,
+    "arrival": {
+     "delay": -30,
+     "time": 1793524290,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793524320,
+     "uncertainty": 30
+    },
+    "stopId": "600085",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 13,
+    "arrival": {
+     "delay": -30,
+     "time": 1793525190,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793525220,
+     "uncertainty": 30
+    },
+    "stopId": "600212",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 14,
+    "arrival": {
+     "delay": -30,
+     "time": 1793525970,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793526000,
+     "uncertainty": 30
+    },
+    "stopId": "600230",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 15,
+    "arrival": {
+     "delay": 0,
+     "time": 1793526540,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793526600,
+     "uncertainty": 30
+    },
+    "stopId": "600239",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 16,
+    "arrival": {
+     "delay": -30,
+     "time": 1793526990,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793527020,
+     "uncertainty": 30
+    },
+    "stopId": "600241",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 17,
+    "arrival": {
+     "delay": -30,
+     "time": 1793527170,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793527200,
+     "uncertainty": 30
+    },
+    "stopId": "600691",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 18,
+    "arrival": {
+     "delay": -30,
+     "time": 1793527410,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793527440,
+     "uncertainty": 30
+    },
+    "stopId": "600243",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 19,
+    "arrival": {
+     "delay": -30,
+     "time": 1793527530,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793527560,
+     "uncertainty": 30
+    },
+    "stopId": "600693",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 20,
+    "arrival": {
+     "delay": -30,
+     "time": 1793527830,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793527860,
+     "uncertainty": 30
+    },
+    "stopId": "600119",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 21,
+    "arrival": {
+     "delay": -30,
+     "time": 1793528070,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793528100,
+     "uncertainty": 30
+    },
+    "stopId": "600185",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 22,
+    "arrival": {
+     "delay": -30,
+     "time": 1793528430,
+     "uncertainty": 30
+    },
+    "departure": {
+     "delay": 0,
+     "time": 1793528460,
+     "uncertainty": 30
+    },
+    "stopId": "600118",
+    "scheduleRelationship": 0
+   },
+   {
+    "stopSequence": 23,
+    "arrival": {
+     "delay": 0,
+     "time": 1793528700,
+     "uncertainty": 30
+    },
+    "stopId": "600117",
+    "scheduleRelationship": 0
+   }
+  ],
+  "vehicle": {
+   "id": "7DBC12428F13E6FACD8FDFD0866122D3_DG54"
+  },
+  "timestamp": 1793524074
+ },
+ "underwayVehicle": {
+  "trip": {
+   "tripId": "39550916-QR 26_27-44526-DG54",
+   "routeId": "BDVL-5212"
+  },
+  "position": {
+   "latitude": -27.481277465820312,
+   "longitude": 153.02259826660156
+  },
+  "currentStopSequence": 11,
+  "currentStatus": 2,
+  "timestamp": 1793524063,
+  "stopId": "600006",
+  "vehicle": {
+   "id": "7DBC12428F13E6FACD8FDFD0866122D3_DG54",
+   "label": "DG54"
+  }
+ },
+ "duplicateVehicles": [
+  [
+   {
+    "trip": {
+     "tripId": "39413741-BT 26_27-44489",
+     "routeId": "130-5146"
+    },
+    "position": {
+     "latitude": -27.58622169494629,
+     "longitude": 153.02685546875
+    },
+    "currentStopSequence": 1,
+    "currentStatus": 2,
+    "timestamp": 1793524060,
+    "stopId": "11343",
+    "vehicle": {
+     "id": "A7393ED51E387246BB3D6249943091E8_5058",
+     "label": "5058"
+    }
+   },
+   {
+    "trip": {
+     "tripId": "39413741-BT 26_27-44489",
+     "routeId": "130-5146"
+    },
+    "position": {
+     "latitude": -27.534582138061523,
+     "longitude": 152.9888916015625
+    },
+    "currentStopSequence": 1,
+    "currentStatus": 2,
+    "timestamp": 1793519572,
+    "stopId": "11343",
+    "vehicle": {
+     "id": "A7393ED51E387246BB3D6249943091E8_7154",
+     "label": "7154"
+    }
+   }
+  ],
+  [
+   {
+    "trip": {
+     "tripId": "37622132-BCC 26_27-42971",
+     "routeId": "F1-4055"
+    },
+    "position": {
+     "latitude": -27.44619369506836,
+     "longitude": 153.0834503173828
+    },
+    "currentStopSequence": 18,
+    "currentStatus": 1,
+    "timestamp": 1793524051,
+    "stopId": "318002",
+    "vehicle": {
+     "id": "D86D5BD7AAF5C603A783FE8A6BF771A6_Walan",
+     "label": "Walan"
+    }
+   },
+   {
+    "trip": {
+     "tripId": "37622132-BCC 26_27-42971",
+     "routeId": "F1-4055"
+    },
+    "position": {
+     "latitude": -27.47713851928711,
+     "longitude": 153.04324340820312
+    },
+    "currentStopSequence": 11,
+    "currentStatus": 1,
+    "timestamp": 1793524056,
+    "stopId": "317582",
+    "vehicle": {
+     "id": "D86D5BD7AAF5C603A783FE8A6BF771A6_Ya-wa-gara",
+     "label": "Ya-wa-gara"
+    }
+   }
+  ]
+ ]
+}
