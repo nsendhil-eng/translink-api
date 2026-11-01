@@ -1240,7 +1240,9 @@ app.get('/api/trip-stops', async (req, res) => {
             const secondsUntil = Math.round((estimatedUtc - syncNow) / 1000);
             const isUpcoming = secondsUntil > -60;
 
-            if (isUpcoming && hasLocation) {
+            // The user's stop is the route stop closest to them, passed or not: following an
+            // upcoming-only nearest made "your stop" slide to the terminus once the bus went by
+            if (hasLocation) {
                 const dist = haversineMeters(userLat, userLon, parseFloat(s.lat), parseFloat(s.lon));
                 if (dist < minDist) { minDist = dist; nearestUpcomingIdx = idx; }
             }
