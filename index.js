@@ -73,7 +73,7 @@ const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITION
     return byTrip;
 });
 
-const { haversineMeters, headingAlongShape, geojsonToLatLon } = require('./lib/geo');
+const { haversineMeters, departureHeading, headingAlongShape, geojsonToLatLon } = require('./lib/geo');
 const {
     STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
     toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
@@ -571,6 +571,29 @@ app.get('/api/stops-near-me', async (req, res) => {
 });
 
 // --- MAIN DEPARTURES ENDPOINT ---
+// Sets `heading` (degrees, null at a trip's last stop) on each departure, from the stop
+// towards the trip's following stops. One query for the whole list.
+async function addDepartureHeadings(departures) {
+    if (!departures.length) return;
+    const { rows } = await pool.query(`
+        SELECT q.i,
+               ST_Y(here.location::geometry) AS lat, ST_X(here.location::geometry) AS lon,
+               ARRAY(
+                   SELECT ST_Y(s.location::geometry) || ',' || ST_X(s.location::geometry)
+                   FROM stop_times st JOIN stops s ON s.stop_id = st.stop_id
+                   WHERE st.trip_id = q.trip_id AND st.stop_sequence > q.seq
+                   ORDER BY st.stop_sequence LIMIT 3
+               ) AS next
+        FROM unnest($1::text[], $2::int[], $3::text[]) WITH ORDINALITY AS q(trip_id, seq, stop_id, i)
+        JOIN stops here ON here.stop_id = q.stop_id
+    `, [departures.map(d => d.trip_id), departures.map(d => d.stop_sequence), departures.map(d => d.stop_id)]);
+    for (const d of departures) d.heading = null;
+    for (const r of rows) {
+        const next = (r.next || []).map(p => p.split(',').map(Number));
+        departures[Number(r.i) - 1].heading = departureHeading([Number(r.lat), Number(r.lon)], next);
+    }
+}
+
 app.get('/api/departures', async (req, res) => {
     // No `stops` param at all: the web board's default stops (it relies on this).
     // `stops` given but empty (e.g. a parent-station record with no stop_code): return
@@ -675,11 +698,12 @@ app.get('/api/departures', async (req, res) => {
         }
 
         const perStop = parseInt(req.query.per_stop, 10) || null;
+        let result;
         if (perStop) {
             // Per-stop mode: guarantees every stop gets at least one departure,
             // even for infrequent platforms with service hours away.
             const countPerStop = new Map();
-            const result = [];
+            result = [];
             for (const dep of sorted) {
                 const n = countPerStop.get(dep.stop_id) ?? 0;
                 if (n < perStop) {
@@ -687,10 +711,12 @@ app.get('/api/departures', async (req, res) => {
                     countPerStop.set(dep.stop_id, n + 1);
                 }
             }
-            res.json(result);
         } else {
-            res.json(sorted.slice(0, 15));
+            result = sorted.slice(0, 15);
         }
+        // Additive, opt-in: which way each service leaves the stop (map arrows)
+        if (req.query.with_heading === '1') await addDepartureHeadings(result);
+        res.json(result);
     } catch (error) {
         console.error('An error occurred in /api/departures:', error);
         res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { haversineMeters, headingAlongShape, geojsonToLatLon } = require('../lib/geo');
+const { haversineMeters, bearingDegrees, departureHeading, headingAlongShape, geojsonToLatLon } = require('../lib/geo');
 const { cleanAlertText, alertWindow, routeCode } = require('../lib/alerts');
 
 // --- Geo ------------------------------------------------------------------------
@@ -8,6 +8,22 @@ const { cleanAlertText, alertWindow, routeCode } = require('../lib/alerts');
 test('haversine: Roma Street to Central is about 750 m', () => {
     const d = haversineMeters(-27.4655, 153.0189, -27.4660, 153.0262);
     assert.ok(d > 700 && d < 800, `got ${d}`);
+});
+
+test('bearings point the right way', () => {
+    assert.equal(Math.round(bearingDegrees(-27.48, 152.99, -27.47, 152.99)), 0);
+    assert.equal(Math.round(bearingDegrees(-27.48, 152.99, -27.48, 153.00)), 90);
+    assert.equal(Math.round(bearingDegrees(-27.48, 152.99, -27.49, 152.99)), 180);
+});
+
+test('departure heading skips a next stop that is only metres away', () => {
+    const stop = [-27.48, 152.99];
+    const acrossTheRoad = [-27.48, 152.9902];      // ~20 m east
+    const nextNorth = [-27.475, 152.9902];          // ~550 m north
+    assert.equal(departureHeading(stop, [acrossTheRoad, nextNorth]), 2);
+    assert.equal(departureHeading(stop, [acrossTheRoad]), 90, 'only close stops: use the furthest');
+    assert.equal(departureHeading(stop, []), null, 'trip ends here');
+    assert.equal(departureHeading(stop, [stop]), null);
 });
 
 // A street running east from (lat, lon), about 10 m per 0.0001°
