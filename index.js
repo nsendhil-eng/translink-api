@@ -131,6 +131,15 @@ const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
     });
 });
 
+// Translink drops stops a vehicle has passed from its TripUpdate. If a trip's updates
+// start after this stop, the service has already been and gone here - even when the
+// timetable says it's still due.
+function passedPerFeed(stopTimeUpdates, stopSequence) {
+    if (!stopTimeUpdates || !stopTimeUpdates.length) return false;
+    const first = Math.min(...stopTimeUpdates.map(u => u.stopSequence).filter(n => n != null));
+    return Number.isFinite(first) && stopSequence < first;
+}
+
 // A GPS fix older than this isn't "where the bus is": buses linked to a trip before it
 // starts (parked, on layover) keep reporting a position from long ago
 const VEHICLE_STALE_S = 180;
@@ -735,6 +744,7 @@ app.get('/api/departures', async (req, res) => {
             // --- END OF TIME LOGIC ---
 
             const stopTimeUpdates = liveDataMap.get(s.trip_id);
+            if (passedPerFeed(stopTimeUpdates, s.stop_sequence)) return null;
             let expectedUtc = scheduledUtc.toISOString();
             let isDelayed = false;
             let isRealtime = false;
@@ -804,7 +814,7 @@ app.get('/api/departures', async (req, res) => {
         });
         
         let sorted = enrichedDepartures
-            .filter(dep => dep.secondsUntilDeparture > -120)
+            .filter(dep => dep && dep.secondsUntilDeparture > -120)
             .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
 
         // Filter to trips that actually call at the get-off stop(s).
@@ -1354,6 +1364,7 @@ app.get('/api/next-trips', async (req, res) => {
             let estimatedUtc = scheduledUtc;
             let isRealtime = false;
             const stopUpdates = liveDataMap.get(row.trip_id);
+            if (passedPerFeed(stopUpdates, row.stop_sequence)) continue;
             if (stopUpdates) {
                 const own = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
                 const ownEvent = own?.departure?.time ? own.departure : own?.arrival;
