@@ -151,6 +151,14 @@ const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
 // Translink drops stops a vehicle has passed from its TripUpdate. If a trip's updates
 // start after this stop, the service has already been and gone here - even when the
 // timetable says it's still due.
+// GTFS-RT enum values (decoded feeds keep numbers)
+const TRIP_CANCELED = 3;        // TripDescriptor.ScheduleRelationship.CANCELED
+const STOP_SKIPPED = 1;         // StopTimeUpdate.ScheduleRelationship.SKIPPED
+
+const isTripCancelled = (tripUpdate) => tripUpdate?.trip?.scheduleRelationship === TRIP_CANCELED;
+const isStopSkipped = (stopTimeUpdates, stopSequence) =>
+    (stopTimeUpdates || []).some(u => u.stopSequence === stopSequence && u.scheduleRelationship === STOP_SKIPPED);
+
 // The vehicle's own (fresh) position wins: Translink sometimes keeps sending predictions
 // for stops a vehicle has already left - e.g. a ferry heading to stop 5 still "due" at
 // stop 4, predicted later than stop 5 itself.
@@ -771,7 +779,10 @@ app.get('/api/departures', async (req, res) => {
             // --- END OF TIME LOGIC ---
 
             const stopTimeUpdates = liveDataMap.get(s.trip_id);
-            if (passedPerFeed(stopTimeUpdates, s.stop_sequence, vehicles.get(s.trip_id))) return null;
+            const cancelled = isTripCancelled(tripUpdates.get(s.trip_id));
+            const skipped = !cancelled && isStopSkipped(stopTimeUpdates, s.stop_sequence);
+            // A cancelled trip has no live progress, so the "passed" checks don't apply to it
+            if (!cancelled && passedPerFeed(stopTimeUpdates, s.stop_sequence, vehicles.get(s.trip_id))) return null;
             let expectedUtc = scheduledUtc.toISOString();
             let isDelayed = false;
             let isRealtime = false;
@@ -831,6 +842,9 @@ app.get('/api/departures', async (req, res) => {
                 isDelayed: isDelayed,
                 // Additive: lets clients tell "live & on time" from "timetable only"
                 isRealtime,
+                // Additive: trip cancelled, or this stop skipped (e.g. a diversion)
+                isCancelled: cancelled,
+                isSkipped: skipped,
                 delaySeconds: isRealtime ? Math.round((new Date(expectedUtc) - scheduledUtc) / 1000) : null,
                 secondsUntilDeparture: secondsUntil,
                 routeLongName: s.route_long_name,
@@ -1299,6 +1313,8 @@ app.get('/api/trip-stops', async (req, res) => {
                 secondsUntil,
                 isUpcoming,
                 isNearest: false,
+                // Additive: this stop is skipped on this trip (e.g. a diversion)
+                isSkipped: (stopTimeUpdateMap.get(s.stop_sequence)?.scheduleRelationship) === STOP_SKIPPED,
                 isRealtime,
                 delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null
             };
@@ -1319,6 +1335,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 routeShortName: tripInfo.route_short_name,
                 routeColor: tripInfo.route_color,
                 routeTextColor: tripInfo.route_text_color,
+                isCancelled: isTripCancelled(tripUpdates.index.get(trip_id)),
                 routeType: tripInfo.route_type,
                 headsign: tripInfo.trip_headsign,
                 directionId: tripInfo.direction_id
@@ -1392,7 +1409,9 @@ app.get('/api/next-trips', async (req, res) => {
             let estimatedUtc = scheduledUtc;
             let isRealtime = false;
             const stopUpdates = liveDataMap.get(row.trip_id);
-            if (passedPerFeed(stopUpdates, row.stop_sequence, vpCache?.index.get(row.trip_id))) continue;
+            const tripCancelled = isTripCancelled(tripUpdates.index.get(row.trip_id));
+            const stopSkipped = !tripCancelled && isStopSkipped(stopUpdates, row.stop_sequence);
+            if (!tripCancelled && passedPerFeed(stopUpdates, row.stop_sequence, vpCache?.index.get(row.trip_id))) continue;
             if (stopUpdates) {
                 const own = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
                 const ownEvent = own?.departure?.time ? own.departure : own?.arrival;
@@ -1426,7 +1445,8 @@ app.get('/api/next-trips', async (req, res) => {
                 estimatedTime: estTime !== scheduledTime ? estTime : null,
                 departureUtc: estimatedUtc.toISOString(),
                 isRealtime,
-                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null
+                delaySeconds: isRealtime ? Math.round((estimatedUtc - scheduledUtc) / 1000) : null,
+                isCancelled: tripCancelled || stopSkipped
             });
         }
 
