@@ -61,10 +61,27 @@ const getTripUpdates = createFeedCache('TripUpdates', REALTIME_URL, 10_000, (fee
     return byTrip;
 });
 
-// trip_id -> VehiclePosition
+// trip_id -> VehiclePosition. Translink sometimes has two vehicles claiming one trip (e.g.
+// two ferries, one at stop 11 and one already past stop 16). Keep the one furthest behind
+// (fresh fixes first): wrongly treating a trip as passed hides a service that's still coming.
 const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITIONS_URL, 4_000, (feed) => {
+    const nowS = Date.now() / 1000;
+    const fresh = (v) => {
+        let ts = v.timestamp;
+        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
+        return !ts || nowS - ts <= 180;
+    };
     const byTrip = new Map();
-    for (const e of feed.entity) if (e.vehicle?.trip?.tripId) byTrip.set(e.vehicle.trip.tripId, e.vehicle);
+    for (const e of feed.entity) {
+        const v = e.vehicle;
+        const id = v?.trip?.tripId;
+        if (!id) continue;
+        const cur = byTrip.get(id);
+        if (!cur) { byTrip.set(id, v); continue; }
+        const better = (fresh(v) && !fresh(cur)) ||
+            (fresh(v) === fresh(cur) && (v.currentStopSequence ?? Infinity) < (cur.currentStopSequence ?? Infinity));
+        if (better) byTrip.set(id, v);
+    }
     return byTrip;
 });
 
@@ -134,7 +151,15 @@ const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
 // Translink drops stops a vehicle has passed from its TripUpdate. If a trip's updates
 // start after this stop, the service has already been and gone here - even when the
 // timetable says it's still due.
-function passedPerFeed(stopTimeUpdates, stopSequence) {
+// The vehicle's own (fresh) position wins: Translink sometimes keeps sending predictions
+// for stops a vehicle has already left - e.g. a ferry heading to stop 5 still "due" at
+// stop 4, predicted later than stop 5 itself.
+function passedPerFeed(stopTimeUpdates, stopSequence, vehicle) {
+    if (vehicle?.currentStopSequence != null && vehicle.currentStopSequence > stopSequence) {
+        let ts = vehicle.timestamp;
+        if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
+        if (!ts || Date.now() / 1000 - ts <= VEHICLE_STALE_S) return true;
+    }
     if (!stopTimeUpdates || !stopTimeUpdates.length) return false;
     const first = Math.min(...stopTimeUpdates.map(u => u.stopSequence).filter(n => n != null));
     return Number.isFinite(first) && stopSequence < first;
@@ -722,8 +747,10 @@ app.get('/api/departures', async (req, res) => {
             return res.json([]);
         }
 
-        // trip_id -> stopTimeUpdates, from the shared GTFS-RT cache
-        const tripUpdates = (await getTripUpdates()).index;
+        // trip_id -> stopTimeUpdates / vehicle, from the shared GTFS-RT caches
+        const [tuCache, vpCache] = await Promise.all([getTripUpdates(), getVehiclePositions().catch(() => null)]);
+        const tripUpdates = tuCache.index;
+        const vehicles = vpCache?.index ?? new Map();
         const liveDataMap = { get: (tripId) => tripUpdates.get(tripId)?.stopTimeUpdate };
 
         const synchronizedNow = new Date();
@@ -744,7 +771,7 @@ app.get('/api/departures', async (req, res) => {
             // --- END OF TIME LOGIC ---
 
             const stopTimeUpdates = liveDataMap.get(s.trip_id);
-            if (passedPerFeed(stopTimeUpdates, s.stop_sequence)) return null;
+            if (passedPerFeed(stopTimeUpdates, s.stop_sequence, vehicles.get(s.trip_id))) return null;
             let expectedUtc = scheduledUtc.toISOString();
             let isDelayed = false;
             let isRealtime = false;
@@ -1333,7 +1360,7 @@ app.get('/api/next-trips', async (req, res) => {
         const formatBrisbane = (utcDate) =>
             new Intl.DateTimeFormat('en-AU', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(utcDate);
 
-        const [stopsResult, tripUpdates] = await Promise.all([
+        const [stopsResult, tripUpdates, vpCache] = await Promise.all([
             pool.query(`
                 SELECT st.trip_id, st.departure_time, st.stop_sequence
                 FROM stop_times st
@@ -1347,7 +1374,8 @@ app.get('/api/next-trips', async (req, res) => {
                   )
                 ORDER BY st.departure_time
             `, [stop_id, route_id, direction_id, dateString]),
-            getTripUpdates()
+            getTripUpdates(),
+            getVehiclePositions().catch(() => null)
         ]);
 
         // trip_id -> stopTimeUpdates, from the shared GTFS-RT cache
@@ -1364,7 +1392,7 @@ app.get('/api/next-trips', async (req, res) => {
             let estimatedUtc = scheduledUtc;
             let isRealtime = false;
             const stopUpdates = liveDataMap.get(row.trip_id);
-            if (passedPerFeed(stopUpdates, row.stop_sequence)) continue;
+            if (passedPerFeed(stopUpdates, row.stop_sequence, vpCache?.index.get(row.trip_id))) continue;
             if (stopUpdates) {
                 const own = stopUpdates.find(u => u.stopSequence === row.stop_sequence);
                 const ownEvent = own?.departure?.time ? own.departure : own?.arrival;
