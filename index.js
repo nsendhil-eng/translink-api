@@ -131,6 +131,14 @@ const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
     });
 });
 
+// A GPS fix older than this isn't "where the bus is": buses linked to a trip before it
+// starts (parked, on layover) keep reporting a position from long ago
+const VEHICLE_STALE_S = 180;
+const fixAgeSeconds = (ts) => {
+    if (ts && typeof ts === 'object' && ts.toNumber) ts = ts.toNumber();
+    return ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null;
+};
+
 // --- Vehicle heading from the trip's shape ------------------------------------
 // Translink's VehiclePositions feed sends no bearing, so derive it: snap the vehicle onto
 // the trip's shape (points in travel order) and take the direction of that segment.
@@ -926,6 +934,7 @@ app.get('/api/stop-live', async (req, res) => {
                 lon: v.position.longitude,
                 bearing: v.position.bearing ?? 0,
                 currentStopSequence: v.currentStopSequence ?? 0,
+                ageSeconds: fixAgeSeconds(v.timestamp),
             };
             // (heading is filled in per trip below, once its shape is loaded)
         }
@@ -978,7 +987,8 @@ app.get('/api/stop-live', async (req, res) => {
                     ? { heading: liveVehicle.bearing }
                     : headingAlongShape(shapePoints, liveVehicle.lat, liveVehicle.lon);
             }
-            const hasPassed = liveVehicle
+            // A stale fix can't tell us the trip has gone past this stop
+            const hasPassed = liveVehicle && !(liveVehicle.ageSeconds > VEHICLE_STALE_S)
                 ? liveVehicle.currentStopSequence > row.stop_sequence
                 : false;
 
@@ -995,6 +1005,8 @@ app.get('/api/stop-live', async (req, res) => {
                     lon: liveVehicle.lon,
                     bearing: heading ? heading.heading : 0,
                     headingKnown: Boolean(heading),
+                    ageSeconds: liveVehicle.ageSeconds,
+                    isStale: liveVehicle.ageSeconds != null && liveVehicle.ageSeconds > VEHICLE_STALE_S,
                 } : null,
                 hasPassed,
             };
@@ -1130,6 +1142,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 bearing: vp.position.bearing || 0,
                 // How old the GPS fix is — clients show "40s ago"
                 ageSeconds: ts ? Math.max(0, Math.round(Date.now() / 1000 - ts)) : null,
+                isStale: ts ? (Date.now() / 1000 - ts) > VEHICLE_STALE_S : false,
                 // Lets clients place the vehicle between the right stops
                 currentStopSequence: vp.currentStopSequence ?? null,
                 // GTFS-RT VehicleStopStatus: 0 INCOMING_AT, 1 STOPPED_AT, 2 IN_TRANSIT_TO
