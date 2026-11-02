@@ -555,6 +555,24 @@ async function shapePoints(shapeIds) {
     return new Map(shapeIds.map(id => [id, shapePointsCache.get(id) || []]));
 }
 
+// GET /api/shapes?ids=S1,S2 -> { shapes: { S1: [[lat, lon], ...] } }: whole route shapes,
+// simplified to ~3 m, for drawing on the home map. CDN-cacheable: shapes change only with the timetable.
+const SHAPES_MAX = 20;
+app.get('/api/shapes', async (req, res) => {
+    const ids = [...new Set(String(req.query.ids || '').split(',').map(s => s.trim()).filter(Boolean))].slice(0, SHAPES_MAX);
+    if (!ids.length) return res.json({ shapes: {} });
+    try {
+        const points = await shapePoints(ids);
+        const shapes = {};
+        for (const [id, pts] of points) if (pts.length >= 2) shapes[id] = pts.map(([la, lo]) => [+la.toFixed(6), +lo.toFixed(6)]);
+        res.set('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+        res.json({ shapes });
+    } catch (error) {
+        console.error('shapes failed:', error);
+        res.status(500).json({ error: 'Failed to fetch shapes.' });
+    }
+});
+
 app.get('/api/trip-vehicles', async (req, res) => {
     const tripIds = [...new Set(String(req.query.trip_ids || '').split(',').map(s => s.trim()).filter(Boolean))]
         .slice(0, TRIP_VEHICLES_MAX);
