@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { haversineMeters, bearingDegrees, departureHeading, headingAlongShape, geojsonToLatLon } = require('../lib/geo');
+const { haversineMeters, bearingDegrees, departureHeading, headingAlongShape, pathAhead, geojsonToLatLon } = require('../lib/geo');
 const { cleanAlertText, alertWindow, routeCode } = require('../lib/alerts');
 
 // --- Geo ------------------------------------------------------------------------
@@ -82,4 +82,21 @@ test('alert windows: open-ended delay alerts expire after 12 h, long-running one
     const old = alertWindow(alert('NO_SERVICE', [{ start: NOW - 40 * 86400, end: NOW + 86400 }]), NOW);
     assert.equal(old.longRunning, true);
     assert.equal(old.priority, 50);
+});
+
+test('path ahead starts at the stop and runs the given distance in travel order', () => {
+    // A straight shape heading north, 1 km of it; the stop sits 10 m east of the 300 m mark
+    const north = (m) => [-27.5 + m / 111_320, 153.0];
+    const shape = [north(0), north(500), north(1000)];
+    const stop = [north(300)[0], 153.0 + 10 / (111_320 * Math.cos(-27.5 * Math.PI / 180))];
+    const path = pathAhead(shape, stop, 400);
+    assert.ok(Math.abs(haversineMeters(...path[0], ...north(300))) < 2);
+    assert.ok(Math.abs(haversineMeters(...path.at(-1), ...north(700))) < 2);
+    assert.equal(path.length, 3);   // stop, the 500 m vertex, the 700 m end
+});
+
+test('path ahead ends at the end of the route, and is empty for a stop off the route', () => {
+    const shape = [[-27.5, 153.0], [-27.49, 153.0]];
+    assert.equal(pathAhead(shape, [-27.495, 153.0], 5000).length, 2);
+    assert.deepEqual(pathAhead(shape, [-27.495, 153.01], 500), []);
 });

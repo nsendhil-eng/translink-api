@@ -73,7 +73,7 @@ const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITION
     return byTrip;
 });
 
-const { haversineMeters, departureHeading, headingAlongShape, geojsonToLatLon } = require('./lib/geo');
+const { haversineMeters, departureHeading, headingAlongShape, pathAhead, geojsonToLatLon } = require('./lib/geo');
 const {
     STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, activeServiceDays, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
     toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
@@ -535,6 +535,39 @@ app.get('/api/shapes-near-me', async (req, res) => {
     }
 });
 
+// --- PATHS AHEAD: the next stretch of a route from a stop, for the home map ---------
+// GET /api/paths-ahead?items=shapeId:stopId,shapeId:stopId&meters=1200
+// -> { paths: { "shapeId:stopId": [[lat, lon], ...] } }; items with no usable shape are left out.
+// Shapes only change with the timetable, so the CDN and clients can keep these a long time.
+const PATH_AHEAD_MAX_ITEMS = 20;
+app.get('/api/paths-ahead', async (req, res) => {
+    const items = [...new Set(String(req.query.items || '').split(',').map(s => s.trim()).filter(s => /^[^:]+:[^:]+$/.test(s)))]
+        .slice(0, PATH_AHEAD_MAX_ITEMS);
+    const meters = Math.min(Math.max(parseInt(req.query.meters, 10) || 1200, 100), 5000);
+    if (!items.length) return res.json({ paths: {} });
+    try {
+        const pairs = items.map(i => i.split(':'));
+        const { rows } = await pool.query(`
+            SELECT q.shape_id, q.stop_id,
+                   ST_AsGeoJSON(ST_Simplify(rs.shape::geometry, 0.00003)) AS geojson,
+                   ST_Y(s.location::geometry) AS lat, ST_X(s.location::geometry) AS lon
+            FROM unnest($1::text[], $2::text[]) AS q(shape_id, stop_id)
+            JOIN route_shapes rs ON rs.shape_id = q.shape_id
+            JOIN stops s ON s.stop_id = q.stop_id
+        `, [pairs.map(p => p[0]), pairs.map(p => p[1])]);
+        const paths = {};
+        for (const r of rows) {
+            const path = pathAhead(geojsonToLatLon(r.geojson), [Number(r.lat), Number(r.lon)], meters);
+            if (path.length) paths[`${r.shape_id}:${r.stop_id}`] = path;
+        }
+        res.set('Cache-Control', 'public, max-age=86400, s-maxage=86400');
+        res.json({ paths });
+    } catch (error) {
+        console.error('paths-ahead failed:', error);
+        res.status(500).json({ error: 'Failed to fetch paths.' });
+    }
+});
+
 app.get('/api/route-shape', async (req, res) => {
     const { shape_id } = req.query;
     if (!shape_id) { return res.status(400).json({ error: 'shape_id is required.' }); }
@@ -710,7 +743,7 @@ app.get('/api/departures', async (req, res) => {
         const scheduledDepartures = await upcomingStopTimes((services) => `
             SELECT
                 st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
-                t.trip_headsign, t.direction_id, r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
+                t.trip_headsign, t.direction_id, t.shape_id, r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
                 r.route_type
             FROM stop_times AS st
             JOIN trips AS t ON st.trip_id = t.trip_id
@@ -767,7 +800,9 @@ app.get('/api/departures', async (req, res) => {
                 routeLongName: s.route_long_name,
                 routeColor: s.route_color,
                 routeTextColor: s.route_text_color,
-                platformCode:s.platform_code
+                platformCode:s.platform_code,
+                // Additive: for /api/paths-ahead (the route drawn ahead of the stop)
+                shapeId: s.shape_id
             };
         });
         
