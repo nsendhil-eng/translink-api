@@ -23,6 +23,22 @@ test('GTFS times past 24:00 roll into the next morning', () => {
     assert.equal(rt.formatBrisbane(rt.scheduledUtc(day, '25:15:30')), '01:15');
 });
 
+test('after midnight, yesterday’s late trips are still due', () => {
+    // 12:30 am Monday 2 Nov in Brisbane
+    const days = rt.activeServiceDays(at('2026-11-01T14:30:00Z'));
+    assert.deepEqual(days.map(d => [d.dateString, d.dayOfWeek, d.fromTime]), [
+        ['20261101', 'sunday', '22:30:00'],      // Sunday's 24:35 bus is 5 min away
+        ['20261102', 'monday', '00:00:00']
+    ]);
+    assert.equal(rt.scheduledUtc(days[0], '24:35:00').toISOString(), '2026-11-01T14:35:00.000Z');
+});
+
+test('by mid-morning only today’s timetable is read, from two hours back', () => {
+    const days = rt.activeServiceDays(at('2026-11-02T00:15:00Z'));   // 10:15 am Monday
+    assert.deepEqual(days.map(d => [d.dateString, d.fromTime]), [['20261102', '08:15:00']]);
+    assert.equal(rt.gtfsTime(91800), '25:30:00');
+});
+
 test('toNum reads protobuf Longs, numbers and junk', () => {
     assert.equal(rt.toNum({ toNumber: () => 1793524055 }), 1793524055);
     assert.equal(rt.toNum(42), 42);

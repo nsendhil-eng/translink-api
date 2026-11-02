@@ -75,10 +75,32 @@ const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITION
 
 const { haversineMeters, departureHeading, headingAlongShape, geojsonToLatLon } = require('./lib/geo');
 const {
-    STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
+    STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, activeServiceDays, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
     toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
 } = require('./lib/realtime');
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
+
+// --- Timetable by service day ----------------------------------------------------
+/** SQL list of the service_ids running on the date in parameter `dateParam` ('$2') */
+const servicesRunningOn = (dateParam, dayOfWeek) => `(
+    (SELECT service_id FROM calendar WHERE start_date <= ${dateParam} AND end_date >= ${dateParam} AND ${dayOfWeek} = 1)
+    EXCEPT (SELECT service_id FROM calendar_dates WHERE date = ${dateParam} AND exception_type = 2)
+    UNION (SELECT service_id FROM calendar_dates WHERE date = ${dateParam} AND exception_type = 1)
+)`;
+
+/**
+ * Upcoming stop times, read once per service day that can still have services due
+ * (today, plus yesterday's after-midnight trips early in the morning; see activeServiceDays).
+ * `buildSql(services)` gets that day's service_id list; in the query $1 is the date, $2 the
+ * earliest departure_time worth reading (filter `st.departure_time >= $2`), and `params`
+ * follow from $3. Each row comes back with `day`, for scheduledUtc.
+ */
+async function upcomingStopTimes(buildSql, params, now = new Date()) {
+    const days = activeServiceDays(now);
+    const results = await Promise.all(days.map(d =>
+        pool.query(buildSql(servicesRunningOn('$1', d.dayOfWeek)), [d.dateString, d.fromTime, ...params])));
+    return results.flatMap((r, i) => r.rows.map(row => ({ ...row, day: days[i] })));
+}
 
 // --- Service alerts --------------------------------------------------------------
 const ALERTS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/alerts';
@@ -605,28 +627,19 @@ app.get('/api/departures', async (req, res) => {
     const stopCodes = (req.query.stops || '001951,600284,600286').split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-        const today = serviceDay();
-        const { dayOfWeek, dateString } = today;
-
-        const staticQuery = `
+        const scheduledDepartures = await upcomingStopTimes((services) => `
             SELECT
                 st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
                 t.trip_headsign, t.direction_id, r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
-                r.route_type,
-                CASE WHEN r.route_type = 3 THEN 'Bus' WHEN r.route_type = 4 THEN 'Ferry' ELSE 'Train' END AS vehicle_type
+                r.route_type
             FROM stop_times AS st
             JOIN trips AS t ON st.trip_id = t.trip_id
             JOIN routes AS r ON t.route_id = r.route_id
             JOIN stops s ON st.stop_id = s.stop_id
-            WHERE s.stop_code = ANY($1::text[])
-            AND t.service_id IN (
-                (SELECT service_id FROM calendar WHERE start_date <= $2 AND end_date >= $2 AND ${dayOfWeek} = 1)
-                EXCEPT (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 2)
-                UNION (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 1)
-            );
-        `;
-        const staticResult = await pool.query(staticQuery, [stopCodes, dateString]);
-        const scheduledDepartures = staticResult.rows;
+            WHERE s.stop_code = ANY($3::text[])
+            AND st.departure_time >= $2
+            AND t.service_id IN ${services}
+        `, [stopCodes]);
 
         if (scheduledDepartures.length === 0) {
             return res.json([]);
@@ -638,7 +651,7 @@ app.get('/api/departures', async (req, res) => {
         const vehicles = vpCache?.index ?? new Map();
         const synchronizedNow = new Date();
         const enrichedDepartures = scheduledDepartures.map(s => {
-            const scheduled = scheduledUtc(today, s.departure_time);
+            const scheduled = scheduledUtc(s.day, s.departure_time);
             const stopTimeUpdates = tripUpdates.get(s.trip_id)?.stopTimeUpdate;
             const cancelled = isTripCancelled(tripUpdates.get(s.trip_id));
             const skipped = !cancelled && isStopSkipped(stopTimeUpdates, s.stop_sequence);
@@ -750,11 +763,7 @@ app.get('/api/stop-live', async (req, res) => {
     const stopIds = stopIdsParam.split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-        const today = serviceDay();
-        const { dayOfWeek, dateString } = today;
-
-        // Fetch all of today's trips for these stops (time filter done in JS to handle > 24h GTFS times)
-        const { rows: allRows } = await pool.query(`
+        const allRows = await upcomingStopTimes((services) => `
             SELECT
                 st.trip_id, st.stop_id, st.stop_sequence, st.departure_time,
                 t.shape_id,
@@ -765,23 +774,17 @@ app.get('/api/stop-live', async (req, res) => {
             JOIN trips t ON st.trip_id = t.trip_id
             JOIN routes r ON t.route_id = r.route_id
             JOIN stops s ON st.stop_id = s.stop_id
-            WHERE st.stop_id = ANY($1)
-            AND t.service_id IN (
-                (SELECT service_id FROM calendar
-                 WHERE start_date <= $2 AND end_date >= $2 AND ${dayOfWeek} = 1)
-                EXCEPT
-                (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 2)
-                UNION
-                (SELECT service_id FROM calendar_dates WHERE date = $2 AND exception_type = 1)
-            )
-            ORDER BY st.departure_time
-        `, [stopIds, dateString]);
+            WHERE st.stop_id = ANY($3)
+            AND st.departure_time >= $2
+            AND t.service_id IN ${services}
+        `, [stopIds]);
 
         // Convert GTFS departure_time to UTC, filter to upcoming, take first 2
         const synchronizedNow = new Date();
         const upcoming = allRows
-            .map(row => ({ ...row, secondsUntil: Math.round((scheduledUtc(today, row.departure_time) - synchronizedNow) / 1000) }))
+            .map(row => ({ ...row, secondsUntil: Math.round((scheduledUtc(row.day, row.departure_time) - synchronizedNow) / 1000) }))
             .filter(row => row.secondsUntil > -60)
+            .sort((a, b) => a.secondsUntil - b.secondsUntil)
             .slice(0, 2);
 
         if (upcoming.length === 0) return res.json({ trips: [] });
@@ -865,9 +868,9 @@ app.get('/api/trip-stops', async (req, res) => {
     const hasLocation = !isNaN(userLat) && !isNaN(userLon);
 
     try {
-        const today = serviceDay();
-        const { dayOfWeek, dateString } = today;
         const syncNow = new Date();
+        // The service day the trip runs on: today, unless it's one of yesterday's late trips
+        let day = serviceDay(syncNow);
 
         // If route_id given without trip_id: find nearest stop on route, then next upcoming trip
         if (!trip_id && route_id) {
@@ -901,34 +904,41 @@ app.get('/api/trip-stops', async (req, res) => {
 
             if (!nearestStopId) return res.status(404).json({ error: 'No stops found for this route/direction.' });
 
-            const { rows: tripRows } = await pool.query(`
+            const tripRows = await upcomingStopTimes((services) => `
                 SELECT st.trip_id, st.departure_time, st.stop_sequence
                 FROM stop_times st
                 JOIN trips t ON st.trip_id = t.trip_id
-                WHERE st.stop_id = $1
-                  AND t.route_id = $2 AND t.direction_id = $3
-                  AND t.service_id IN (
-                    (SELECT service_id FROM calendar WHERE start_date <= $4 AND end_date >= $4 AND ${dayOfWeek} = 1)
-                    EXCEPT (SELECT service_id FROM calendar_dates WHERE date = $4 AND exception_type = 2)
-                    UNION (SELECT service_id FROM calendar_dates WHERE date = $4 AND exception_type = 1)
-                  )
-                ORDER BY st.departure_time
-            `, [nearestStopId, route_id, dirId, dateString]);
+                WHERE st.stop_id = $3
+                  AND t.route_id = $4 AND t.direction_id = $5
+                  AND st.departure_time >= $2
+                  AND t.service_id IN ${services}
+            `, [nearestStopId, route_id, dirId], syncNow);
 
             // Pick the next trip by its LIVE time at the stop: a bus running 5 min late is
             // still coming after its scheduled time has passed
             const updates = (await getTripUpdates()).index;
             const liveSecondsUntil = (tr) => {
-                const live = liveStopTime(updates.get(tr.trip_id)?.stopTimeUpdate, tr.stop_sequence, scheduledUtc(today, tr.departure_time));
+                const live = liveStopTime(updates.get(tr.trip_id)?.stopTimeUpdate, tr.stop_sequence, scheduledUtc(tr.day, tr.departure_time));
                 return Math.round((live.estimatedUtc - syncNow) / 1000);
             };
             let best = null;
             for (const tr of tripRows) {
                 const s = liveSecondsUntil(tr);
-                if (s > -60 && (best === null || s < best.s)) best = { s, id: tr.trip_id };
+                if (s > -60 && (best === null || s < best.s)) best = { s, id: tr.trip_id, day: tr.day };
             }
-            if (best) trip_id = best.id;
+            if (best) { trip_id = best.id; day = best.day; }
             if (!trip_id) return res.status(404).json({ error: 'No upcoming trips found.' });
+        } else if (trip_id) {
+            // A trip asked for by id: after midnight it may be one of yesterday's late trips
+            const yesterday = activeServiceDays(syncNow).find(d => d.dateString !== day.dateString);
+            if (yesterday) {
+                const { rows } = await pool.query(`
+                    SELECT 1 FROM trips t
+                    WHERE t.trip_id = $2 AND t.service_id IN ${servicesRunningOn('$1', yesterday.dayOfWeek)}
+                      AND (SELECT max(departure_time) FROM stop_times WHERE trip_id = $2) >= $3
+                `, [yesterday.dateString, trip_id, yesterday.fromTime]);
+                if (rows.length) day = yesterday;
+            }
         }
 
         if (!trip_id) return res.status(400).json({ error: 'trip_id or (route_id + direction_id) required.' });
@@ -1013,7 +1023,7 @@ app.get('/api/trip-stops', async (req, res) => {
         let propagatedDelay = null;
 
         const stops = stopResult.rows.map((s, idx) => {
-            const scheduled = scheduledUtc(today, s.departure_time);
+            const scheduled = scheduledUtc(day, s.departure_time);
             let estimatedUtc = scheduled;
             let isRealtime = false;
             // Walking the whole trip, so a delay can be carried forward even from a stop
@@ -1105,35 +1115,32 @@ app.get('/api/next-trips', async (req, res) => {
     }
 
     try {
-        const today = serviceDay();
-        const { dayOfWeek, dateString } = today;
         const syncNow = new Date();
 
-        const [stopsResult, tripUpdates, vpCache] = await Promise.all([
-            pool.query(`
+        const [stopRows, tripUpdates, vpCache] = await Promise.all([
+            upcomingStopTimes((services) => `
                 SELECT st.trip_id, st.departure_time, st.stop_sequence
                 FROM stop_times st
                 JOIN trips t ON st.trip_id = t.trip_id
-                WHERE st.stop_id = $1
-                  AND t.route_id = $2 AND t.direction_id = $3
-                  AND t.service_id IN (
-                    (SELECT service_id FROM calendar WHERE start_date <= $4 AND end_date >= $4 AND ${dayOfWeek} = 1)
-                    EXCEPT (SELECT service_id FROM calendar_dates WHERE date = $4 AND exception_type = 2)
-                    UNION (SELECT service_id FROM calendar_dates WHERE date = $4 AND exception_type = 1)
-                  )
-                ORDER BY st.departure_time
-            `, [stop_id, route_id, direction_id, dateString]),
+                WHERE st.stop_id = $3
+                  AND t.route_id = $4 AND t.direction_id = $5
+                  AND st.departure_time >= $2
+                  AND t.service_id IN ${services}
+            `, [stop_id, route_id, direction_id], syncNow),
             getTripUpdates(),
             getVehiclePositions().catch(() => null)
         ]);
+        // Timetable order across both service days
+        for (const row of stopRows) row.scheduled = scheduledUtc(row.day, row.departure_time);
+        stopRows.sort((a, b) => a.scheduled - b.scheduled);
 
         // trip_id -> stopTimeUpdates, from the shared GTFS-RT cache
         const liveDataMap = { get: (tripId) => tripUpdates.index.get(tripId)?.stopTimeUpdate };
 
         const trips = [];
-        for (const row of stopsResult.rows) {
+        for (const row of stopRows) {
             if (trips.length >= 5) break;
-            const scheduled = scheduledUtc(today, row.departure_time);
+            const scheduled = row.scheduled;
             const stopUpdates = liveDataMap.get(row.trip_id);
             const tripCancelled = isTripCancelled(tripUpdates.index.get(row.trip_id));
             const stopSkipped = !tripCancelled && isStopSkipped(stopUpdates, row.stop_sequence);
