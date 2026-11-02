@@ -535,6 +535,59 @@ app.get('/api/shapes-near-me', async (req, res) => {
     }
 });
 
+// --- TRIP VEHICLES: where the vehicles on given trips are, for the home map ----------
+// GET /api/trip-vehicles?trip_ids=T1,T2
+// -> { vehicles: [{ tripId, lat, lon, heading, headingKnown, ageSeconds, isStale }] }; trips
+// with no vehicle reporting are left out. The feed sends no bearing, so heading comes from
+// the trip's shape (cached per instance: shapes only change with the timetable).
+const TRIP_VEHICLES_MAX = 20;
+const shapePointsCache = new Map();   // shape_id -> [[lat, lon], ...]
+async function shapePoints(shapeIds) {
+    const missing = shapeIds.filter(id => !shapePointsCache.has(id));
+    if (missing.length) {
+        const { rows } = await pool.query(`
+            SELECT shape_id, ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00003)) AS geojson
+            FROM route_shapes WHERE shape_id = ANY($1)
+        `, [missing]);
+        if (shapePointsCache.size > 500) shapePointsCache.clear();
+        for (const r of rows) shapePointsCache.set(r.shape_id, geojsonToLatLon(r.geojson));
+    }
+    return new Map(shapeIds.map(id => [id, shapePointsCache.get(id) || []]));
+}
+
+app.get('/api/trip-vehicles', async (req, res) => {
+    const tripIds = [...new Set(String(req.query.trip_ids || '').split(',').map(s => s.trim()).filter(Boolean))]
+        .slice(0, TRIP_VEHICLES_MAX);
+    if (!tripIds.length) return res.json({ vehicles: [] });
+    try {
+        const byTrip = (await getVehiclePositions()).index;
+        const live = tripIds.map(id => [id, byTrip.get(id)]).filter(([, vp]) => vp?.position);
+        if (!live.length) return res.json({ vehicles: [] });
+
+        const { rows } = await pool.query('SELECT trip_id, shape_id FROM trips WHERE trip_id = ANY($1)', [live.map(([id]) => id)]);
+        const shapeOf = new Map(rows.map(r => [r.trip_id, r.shape_id]));
+        const shapes = await shapePoints([...new Set(rows.map(r => r.shape_id).filter(Boolean))]);
+
+        const vehicles = live.map(([tripId, vp]) => {
+            const lat = vp.position.latitude, lon = vp.position.longitude;
+            const h = vp.position.bearing
+                ? { heading: vp.position.bearing }
+                : headingAlongShape(shapes.get(shapeOf.get(tripId)) || [], lat, lon);
+            return {
+                tripId, lat, lon,
+                heading: h ? h.heading : 0,
+                headingKnown: Boolean(h),
+                ageSeconds: fixAgeSeconds(vp.timestamp),
+                isStale: !isFreshFix(vp.timestamp)
+            };
+        });
+        res.json({ vehicles });
+    } catch (error) {
+        console.error('trip-vehicles failed:', error);
+        res.json({ vehicles: [] });
+    }
+});
+
 // --- PATHS AHEAD: the next stretch of a route from a stop, for the home map ---------
 // GET /api/paths-ahead?items=shapeId:stopId,shapeId:stopId&meters=1200
 // -> { paths: { "shapeId:stopId": [[lat, lon], ...] } }; items with no usable shape are left out.
