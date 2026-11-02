@@ -79,6 +79,7 @@ const {
     toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
 } = require('./lib/realtime');
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
+const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 
 // --- Timetable by service day ----------------------------------------------------
 /** SQL list of the service_ids running on the date in parameter `dateParam` ('$2') */
@@ -109,6 +110,85 @@ const getAlerts = createFeedCache('Alerts', ALERTS_URL, 60_000, (feed) => {
     const obj = gtfsRealtime.toObject(feed, { enums: String, longs: Number });
     return (obj.entity || []).filter(e => e.alert).map(parseAlertEntity);
 });
+
+// --- Which stations a rail closure covers --------------------------------------
+// The feed names only routes for rail closures, so "Ipswich to Rosewood closed" matched every
+// Ipswich-line station. The alert's Translink page lists the stations (lib/alertPages.js).
+// Per instance: pages are cached for hours, and a request waits briefly for any not yet read.
+const SECTION_TTL_MS = 6 * 3600_000;
+const SECTION_RETRY_MS = 30 * 60_000;    // after a failed or unreadable page
+const SECTION_WAIT_MS = 2500;
+const sectionCache = new Map();          // alert id -> { at, stations: [...] | null, pending }
+let railStationsPromise = null;          // every station: { stop_id, stop_name, lat, lon }
+
+const needsSection = (a) => a.stopIds.size === 0 && /translink\.com\.au\/updates\//.test(a.url || '') &&
+    [...a.routeCodes].some(c => /^[A-Z]{4}$/.test(c));   // rail route codes: "BRIP"
+
+const railStations = () => railStationsPromise ??= pool.query(`
+    SELECT stop_id, stop_name, ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon
+    FROM stops WHERE location_type = 1 AND stop_name ILIKE '% station'
+`).then(r => r.rows).catch(e => { railStationsPromise = null; throw e; });
+
+/** Stations along a train trip from one station to the other, both included */
+async function stationsBetween(from, to) {
+    const { rows } = await pool.query(`
+        WITH trip AS (
+            SELECT st.trip_id FROM stop_times st JOIN stops s ON s.stop_id = st.stop_id
+            JOIN trips t ON t.trip_id = st.trip_id JOIN routes r ON r.route_id = t.route_id
+            WHERE s.parent_station IN ($1, $2) AND r.route_type = 2   -- a train, not the railbus
+            GROUP BY st.trip_id HAVING count(DISTINCT s.parent_station) = 2 LIMIT 1
+        )
+        SELECT s.parent_station AS stop_id FROM stop_times st
+        JOIN trip ON trip.trip_id = st.trip_id JOIN stops s ON s.stop_id = st.stop_id
+        ORDER BY st.stop_sequence
+    `, [from.stop_id, to.stop_id]);
+    const ids = rows.map(r => r.stop_id);
+    const [i, j] = [ids.indexOf(from.stop_id), ids.indexOf(to.stop_id)].sort((x, y) => x - y);
+    if (i < 0) return [];
+    const byId = new Map((await railStations()).map(s => [s.stop_id, s]));
+    return ids.slice(i, j + 1).map(id => byId.get(id)).filter(Boolean);
+}
+
+async function readSection(a) {
+    const stations = await railStations();
+    const html = await (await fetch(a.url, { ...fetchOptions, timeout: 5000 })).text();
+    let found = matchStations(affectedStationNames(html), stations);
+    if (!found.length) {
+        // No list: "trains will not run between Northgate and Shorncliffe stations"
+        const ends = closureEnds(html);
+        const [from, to] = ends ? matchStations(ends, stations) : [];
+        if (from && to) found = await stationsBetween(from, to);
+    }
+    return found.length ? found : null;
+}
+
+/** For clients: ["Ipswich", "Thomas Street", …], or null when the closed stations aren't known */
+const stationNames = (section) => section ? section.map(s => s.stop_name.replace(/ station$/i, '')) : null;
+
+/** alert id -> the stations its closure covers, for the rail alerts whose page says */
+async function closureSections(alerts) {
+    const now = Date.now();
+    const waits = [];
+    for (const a of alerts) {
+        if (!needsSection(a)) continue;
+        const c = sectionCache.get(a.id);
+        if (c && (c.pending || now - c.at < (c.stations ? SECTION_TTL_MS : SECTION_RETRY_MS))) {
+            if (c.pending) waits.push(c.pending);
+            continue;
+        }
+        const entry = { at: now, stations: c?.stations ?? null, pending: null };
+        entry.pending = readSection(a)
+            .then(s => { entry.stations = s; })
+            .catch(e => console.error(`alert ${a.id} page:`, e.message))
+            .finally(() => { entry.at = Date.now(); entry.pending = null; });
+        sectionCache.set(a.id, entry);
+        waits.push(entry.pending);
+    }
+    if (waits.length) await Promise.race([Promise.all(waits), new Promise(r => setTimeout(r, SECTION_WAIT_MS))]);
+    const out = new Map();
+    for (const a of alerts) { const s = sectionCache.get(a.id)?.stations; if (s) out.set(a.id, s); }
+    return out;
+}
 
 // Load the GTFS-realtime schema once when the server starts
 let gtfsRealtime;
@@ -1246,6 +1326,7 @@ app.get('/api/alerts', async (req, res) => {
                 : Promise.resolve([])
         ]);
 
+        const sections = await closureSections(alerts);
         const wantCodes = new Map(routeIds.map(id => [routeCode(id), id]));
         for (const r of servingRows) if (!wantCodes.has(routeCode(r.route_id))) wantCodes.set(routeCode(r.route_id), r.route_id);
         const wantStops = new Set(stopIds);
@@ -1257,11 +1338,21 @@ app.get('/api/alerts', async (req, res) => {
             const w = alertWindow(a, now);
             if (!w) continue;
 
-            const matchedRouteIds = [...a.routeCodes].filter(c => wantCodes.has(c)).map(c => wantCodes.get(c));
-            const matchedStopIds = [...a.stopIds].filter(s => wantStops.has(s));
+            let matchedRouteIds = [...a.routeCodes].filter(c => wantCodes.has(c)).map(c => wantCodes.get(c));
+            let matchedStopIds = [...a.stopIds].filter(s => wantStops.has(s));
+            // A closure with known stations matters at a stop only inside the closed section;
+            // asked by route alone (line details), the route match stands
+            const section = sections.get(a.id);
+            if (section && stopIds.length) {
+                const closed = new Set(section.map(s => s.stop_id));
+                matchedStopIds = stopRows
+                    .filter(r => stopIds.includes(r.stop_id) && (closed.has(r.stop_id) || closed.has(r.parent)))
+                    .map(r => r.stop_id);
+                if (!matchedStopIds.length) matchedRouteIds = [];
+            }
             if (!matchedRouteIds.length && !matchedStopIds.length) continue;
 
-            out.push(alertJson(a, w, { matchedRouteIds, matchedStopIds }));
+            out.push(alertJson(a, w, { matchedRouteIds, matchedStopIds, affectedStations: stationNames(section) }));
         }
         out.sort((x, y) => y.priority - x.priority || (x.activeFrom || '').localeCompare(y.activeFrom || ''));
         res.json({ alerts: out });
@@ -1297,19 +1388,33 @@ app.get('/api/alerts/all', async (req, res) => {
                 : Promise.resolve([])
         ]);
 
+        const sections = await closureSections(alerts);
         const out = [];
         for (const a of alerts) {
             const w = alertWindow(a, now);
             if (!w) continue;
-            // Rows are sorted by distance, so the first match is the nearest
-            const nearest = stopRows.find(s =>
-                a.stopIds.has(s.stop_id) || (s.parent && a.stopIds.has(s.parent)) ||
-                (s.servicing_routes && s.servicing_routes.split(', ').some(r => a.routeCodes.has(r))));
+            const section = sections.get(a.id);
+            let nearest = null;
+            if (section) {
+                // Distance to the closed section itself, not to anywhere its routes run
+                if (hasLocation) {
+                    for (const s of section) {
+                        const dist = Math.round(haversineMeters(lat, lon, Number(s.lat), Number(s.lon)));
+                        if (!nearest || dist < nearest.dist) nearest = { dist, stop_name: s.stop_name };
+                    }
+                }
+            } else {
+                // Rows are sorted by distance, so the first match is the nearest
+                nearest = stopRows.find(s =>
+                    a.stopIds.has(s.stop_id) || (s.parent && a.stopIds.has(s.parent)) ||
+                    (s.servicing_routes && s.servicing_routes.split(', ').some(r => a.routeCodes.has(r))));
+            }
             out.push(alertJson(a, w, {
                 distanceM: nearest ? nearest.dist : null,
                 nearestStopName: nearest ? nearest.stop_name : null,
                 // A few route codes for display; routeCount has the full total
-                routeCodes: [...a.routeCodes].sort().slice(0, 12)
+                routeCodes: [...a.routeCodes].sort().slice(0, 12),
+                affectedStations: stationNames(section)
             }));
         }
         out.sort((x, y) => {
