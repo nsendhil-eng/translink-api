@@ -778,7 +778,7 @@ app.get('/api/stops-near-me', async (req, res) => {
 
 // --- MAIN DEPARTURES ENDPOINT ---
 // Sets `heading` (degrees, null at a trip's last stop) on each departure, from the stop
-// towards the trip's following stops. One query for the whole list.
+// towards the trip's following stops, and `isLastStop`. One query for the whole list.
 async function addDepartureHeadings(departures) {
     if (!departures.length) return;
     const { rows } = await pool.query(`
@@ -793,10 +793,13 @@ async function addDepartureHeadings(departures) {
         FROM unnest($1::text[], $2::int[], $3::text[]) WITH ORDINALITY AS q(trip_id, seq, stop_id, i)
         JOIN stops here ON here.stop_id = q.stop_id
     `, [departures.map(d => d.trip_id), departures.map(d => d.stop_sequence), departures.map(d => d.stop_id)]);
-    for (const d of departures) d.heading = null;
+    for (const d of departures) { d.heading = null; d.isLastStop = false; }
     for (const r of rows) {
         const next = (r.next || []).map(p => p.split(',').map(Number));
-        departures[Number(r.i) - 1].heading = departureHeading([Number(r.lat), Number(r.lon)], next);
+        const d = departures[Number(r.i) - 1];
+        d.heading = departureHeading([Number(r.lat), Number(r.lon)], next);
+        // Additive: the trip ends here (arriving, not leaving), e.g. a train terminating at Roma Street
+        d.isLastStop = next.length === 0;
     }
 }
 
