@@ -80,6 +80,7 @@ const {
 } = require('./lib/realtime');
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
+const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
 
 // --- Timetable by service day ----------------------------------------------------
 /** SQL list of the service_ids running on the date in parameter `dateParam` ('$2') */
@@ -1579,6 +1580,42 @@ app.get('/api/alerts/all', async (req, res) => {
     } catch (error) {
         console.error('alerts/all failed:', error);
         res.json({ alerts: [] });
+    }
+});
+
+// --- ETA: a saved-place chip's answer ("Home · 34 min · leave in 3 min · 412") ---------
+// GET /api/eta?fromLat&fromLon&toLat&toLon -> { eta: {...} | null } (~300 bytes; /api/plan's
+// itineraries are ~40 KB). Plans now, in Brisbane time. Cached ~90 s per origin (to ~150 m),
+// destination and minute, so reopening the app or neighbours heading the same way are free.
+const ETA_CACHE_MS = 90_000;
+const etaCache = new Map();   // key -> { at, eta }
+app.get('/api/eta', async (req, res) => {
+    const fromLat = parseFloat(req.query.fromLat), fromLon = parseFloat(req.query.fromLon);
+    const toLat = parseFloat(req.query.toLat), toLon = parseFloat(req.query.toLon);
+    if ([fromLat, fromLon, toLat, toLon].some(isNaN)) {
+        return res.status(400).json({ error: 'fromLat, fromLon, toLat, toLon are required.' });
+    }
+    const now = Date.now();
+    const key = etaCacheKey(fromLat, fromLon, toLat, toLon, now);
+    const hit = etaCache.get(key);
+    if (hit && now - hit.at < ETA_CACHE_MS) return res.json({ eta: hit.eta, cached: true });
+    try {
+        const day = serviceDay(new Date(now));
+        const date = `${day.dateString.slice(0, 4)}-${day.dateString.slice(4, 6)}-${day.dateString.slice(6)}`;
+        const otpUrl = `${OTP_URL}/otp/routers/default/plan` +
+            `?fromPlace=${fromLat},${fromLon}&toPlace=${toLat},${toLon}` +
+            `&time=${encodeURIComponent(formatBrisbane(new Date(now)))}&date=${date}` +
+            `&mode=TRANSIT,WALK&numItineraries=3&walkReluctance=5&maxWalkDistance=1500`;
+        const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' }, timeout: 8000 });
+        if (!otpRes.ok) return res.status(502).json({ error: 'OTP request failed.' });
+        const best = bestItinerary((await otpRes.json()).plan?.itineraries);
+        const eta = best ? etaSummary(best, now) : null;
+        if (etaCache.size > 2000) etaCache.clear();
+        etaCache.set(key, { at: now, eta });
+        res.json({ eta });
+    } catch (error) {
+        console.error('eta failed:', error);
+        res.status(500).json({ error: 'Failed to work out a travel time.' });
     }
 });
 
