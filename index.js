@@ -837,7 +837,7 @@ app.get('/api/departures', async (req, res) => {
             SELECT
                 st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
                 t.trip_headsign, t.direction_id, t.shape_id, r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
-                r.route_type
+                r.route_type, ST_Y(s.location::geometry) AS stop_lat, ST_X(s.location::geometry) AS stop_lon
             FROM stop_times AS st
             JOIN trips AS t ON st.trip_id = t.trip_id
             JOIN routes AS r ON t.route_id = r.route_id
@@ -919,8 +919,33 @@ app.get('/api/departures', async (req, res) => {
         }
 
         const perStop = parseInt(req.query.per_stop, 10) || null;
+        const perRoute = parseInt(req.query.per_route, 10) || null;
         let result;
-        if (perStop) {
+        if (perRoute) {
+            // Additive, per-route mode (home screen): each route + direction's next departures
+            // from the stop nearest `lat`/`lon` that it serves, so every route nearby is listed.
+            // per_stop caps each stop instead, and at a busy stop its few departures crowd out
+            // most of the routes calling there.
+            const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+            const stopLoc = new Map(scheduledDepartures.map(r => [r.stop_id, [Number(r.stop_lat), Number(r.stop_lon)]]));
+            const dist = (id) => {
+                const p = stopLoc.get(id);
+                return p && !isNaN(lat) && !isNaN(lon) ? haversineMeters(lat, lon, p[0], p[1]) : 0;
+            };
+            const key = (d) => `${d.routeId}|${d.directionId}`;
+            const nearestStop = new Map();
+            for (const d of sorted) {
+                const cur = nearestStop.get(key(d));
+                if (cur === undefined || dist(d.stop_id) < dist(cur)) nearestStop.set(key(d), d.stop_id);
+            }
+            const count = new Map();
+            result = [];
+            for (const d of sorted) {
+                if (d.stop_id !== nearestStop.get(key(d))) continue;
+                const n = count.get(key(d)) ?? 0;
+                if (n < perRoute) { result.push(d); count.set(key(d), n + 1); }
+            }
+        } else if (perStop) {
             // Per-stop mode: guarantees every stop gets at least one departure,
             // even for infrequent platforms with service hours away.
             const countPerStop = new Map();
