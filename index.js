@@ -1675,6 +1675,67 @@ app.get('/api/places', async (req, res) => {
     }
 });
 
+// --- HEALTH: is everything the app depends on working? ----------------------------------
+// GET /api/health -> 200 when all checks pass, 503 otherwise, with a line per check. Watched by
+// an uptime monitor every few minutes, so problems email/notify instead of waiting to be noticed.
+// Cached 60 s: monitors (and anyone else) can't turn it into load on OTP or Photon.
+const HEALTH_CACHE_MS = 60_000;
+const TIMETABLE_MIN_DAYS = 7;          // warn while there's still time for the weekly import to fix it
+const REALTIME_MAX_AGE_S = 300;
+let healthCache = null;
+
+async function healthChecks() {
+    const timed = async (name, fn) => {
+        const t0 = Date.now();
+        try {
+            const detail = await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), 10000))]);
+            return { name, ok: true, ms: Date.now() - t0, ...detail };
+        } catch (e) {
+            return { name, ok: false, ms: Date.now() - t0, error: e.message };
+        }
+    };
+    return Promise.all([
+        timed('timetable', async () => {
+            const { rows } = await pool.query('SELECT max(end_date) AS e FROM calendar');
+            const end = rows[0].e;
+            const today = serviceDay().dateString;
+            const days = Math.round((Date.UTC(+end.slice(0, 4), +end.slice(4, 6) - 1, +end.slice(6)) -
+                Date.UTC(+today.slice(0, 4), +today.slice(4, 6) - 1, +today.slice(6))) / 86_400_000);
+            if (days < TIMETABLE_MIN_DAYS) throw new Error(`timetable ends ${end}, ${days} days away`);
+            return { validUntil: end, daysLeft: days };
+        }),
+        timed('realtime', async () => {
+            const feed = (await getTripUpdates()).feed;
+            const ageS = Math.round(Date.now() / 1000 - toNum(feed.header?.timestamp));
+            if (!(ageS <= REALTIME_MAX_AGE_S)) throw new Error(`Translink trip updates are ${ageS}s old`);
+            return { ageSeconds: ageS };
+        }),
+        timed('planner', async () => {
+            // Roma Street to South Bank: always has a plan when OTP is up
+            const r = await fetch(`${OTP_URL}/otp/routers/default/plan?fromPlace=-27.4656,153.0194&toPlace=-27.4766,153.0203&mode=TRANSIT,WALK&numItineraries=1`,
+                { headers: { 'User-Agent': 'WayGo/1.0' }, timeout: 9000 });
+            if (!r.ok) throw new Error(`OTP HTTP ${r.status}`);
+            const n = ((await r.json()).plan?.itineraries || []).length;
+            if (!n) throw new Error('OTP returned no plan');
+            return {};
+        }),
+        timed('places', async () => {
+            if (!PHOTON_URL) return { note: 'using public geocoders (PHOTON_URL not set)' };
+            const results = await photonSearch(PHOTON_URL, 'Suncorp Stadium', -27.47, 153.02, PHOTON_KEY ? { 'X-WayGo-Key': PHOTON_KEY } : {});
+            if (!results.length) throw new Error('Photon found nothing for "Suncorp Stadium"');
+            return {};
+        })
+    ]);
+}
+
+app.get('/api/health', async (req, res) => {
+    if (!healthCache || Date.now() - healthCache.at > HEALTH_CACHE_MS) {
+        healthCache = { at: Date.now(), checks: await healthChecks() };
+    }
+    const ok = healthCache.checks.every(c => c.ok);
+    res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks });
+});
+
 app.get('/api/plan', async (req, res) => {
     const { fromLat, fromLon, toLat, toLon, time, date, modes } = req.query;
     if (!fromLat || !fromLon || !toLat || !toLon) {
