@@ -81,6 +81,7 @@ const {
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
+const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, tidy } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
 /** SQL list of the service_ids running on the date in parameter `dateParam` ('$2') */
@@ -1616,6 +1617,61 @@ app.get('/api/eta', async (req, res) => {
     } catch (error) {
         console.error('eta failed:', error);
         res.status(500).json({ error: 'Failed to work out a travel time.' });
+    }
+});
+
+// --- PLACES: address and place search for the planner and saved places -----------------
+// GET /api/places?q=&lat=&lon= -> [{ placeId, displayName, lat, lon }] (up to 6, SEQ only).
+// With PHOTON_URL set (our own Photon on the Oracle box, see scripts/setup-photon.sh) every
+// query goes there. Until then: public Photon, and Nominatim for "45 Station Rd" style house
+// numbers, as the app did directly; both public services limit heavy and commercial use.
+// Cached 10 min per query and ~1 km of location, so typing doesn't repeat upstream calls.
+const PHOTON_URL = process.env.PHOTON_URL || null;          // e.g. http://152.67.98.226/photon
+const PHOTON_KEY = process.env.PHOTON_KEY || '';
+const PLACES_CACHE_MS = 10 * 60_000;
+const placesCache = new Map();
+const geoHeaders = { 'User-Agent': 'WayGo/1.0 (transit.sn-app.space; Brisbane transit app)' };
+
+async function photonSearch(base, q, lat, lon, extraHeaders = {}) {
+    const url = `${base}/api?q=${encodeURIComponent(q)}&lat=${lat}&lon=${lon}&bbox=${SEQ_BBOX}&lang=en&limit=10`;
+    const r = await fetch(url, { headers: { ...geoHeaders, ...extraHeaders }, timeout: 5000 });
+    if (!r.ok) throw new Error(`Photon ${r.status}`);
+    return tidy(((await r.json()).features || []).map(fromPhoton));
+}
+
+async function nominatimSearch(q) {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&countrycodes=au` +
+        `&viewbox=${SEQ_BBOX}&bounded=1&format=json&limit=6`;
+    const r = await fetch(url, { headers: geoHeaders, timeout: 5000 });
+    if (!r.ok) throw new Error(`Nominatim ${r.status}`);
+    return tidy((await r.json()).map(fromNominatim));
+}
+
+app.get('/api/places', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 3) return res.json([]);
+    // Brisbane CBD when the location isn't known
+    const lat = Number.isFinite(parseFloat(req.query.lat)) ? parseFloat(req.query.lat) : -27.4698;
+    const lon = Number.isFinite(parseFloat(req.query.lon)) ? parseFloat(req.query.lon) : 153.0251;
+    const key = `${q.toLowerCase()}@${lat.toFixed(2)},${lon.toFixed(2)}`;
+    const hit = placesCache.get(key);
+    if (hit && Date.now() - hit.at < PLACES_CACHE_MS) return res.json(hit.results);
+    try {
+        let results;
+        if (PHOTON_URL) {
+            results = await photonSearch(PHOTON_URL, q, lat, lon, PHOTON_KEY ? { 'X-WayGo-Key': PHOTON_KEY } : {});
+        } else if (HOUSE_NUMBER_PREFIX.test(q)) {
+            results = await nominatimSearch(q);
+        } else {
+            results = await photonSearch('https://photon.komoot.io', q, lat, lon).catch(() => []);
+            if (!results.length) results = await nominatimSearch(q);
+        }
+        if (placesCache.size > 5000) placesCache.clear();
+        placesCache.set(key, { at: Date.now(), results });
+        res.json(results);
+    } catch (error) {
+        console.error('places failed:', error.message);
+        res.json([]);
     }
 });
 
