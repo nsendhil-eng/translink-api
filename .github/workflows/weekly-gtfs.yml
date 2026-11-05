@@ -1,0 +1,35 @@
+# Weekly refresh of the SEQ timetable in Postgres (load into a side schema, check, swap in).
+# Sunday 2 am Brisbane, an hour before the OTP graph rebuild on the Oracle box picks up the same
+# feed. A failed run leaves the live timetable as it was, and GitHub emails the repo owner.
+#
+# Secrets (repo → Settings → Secrets and variables → Actions):
+#   POSTGRES_URL_NON_POOLING  required: the same value as in Vercel
+#   HEALTHCHECK_URL           optional: a healthchecks.io ping URL, alerts when a week is missed
+name: Weekly timetable import
+
+on:
+  schedule:
+    - cron: '0 16 * * 6'   # Saturday 16:00 UTC = Sunday 02:00 in Brisbane (no daylight saving)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Load and check only, leave the live timetable alone'
+        type: boolean
+        default: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Import timetable
+        env:
+          POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+        run: node scripts/ingest-gtfs.js ${{ inputs.dry_run && '--dry-run' || '' }}
