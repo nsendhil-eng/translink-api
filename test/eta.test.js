@@ -20,6 +20,12 @@ test('the plan arriving first wins, walking included', () => {
     assert.equal(bestItinerary([slow, fast]), fast);
 });
 
+test('same arrival minute: no change and leaving later beat a hop and a change', () => {
+    const hopAndChange = itin([walk(0, 2), bus('375', 2, 5, 'Roma St'), walk(5, 6), bus('412', 10, 22, 'Stop 138'), walk(22, 24)], 1);
+    const direct = itin([walk(5, 12), bus('412', 12, 22, 'Stop 138'), walk(22, 24)]);
+    assert.equal(bestItinerary([hopAndChange, direct]), direct);
+});
+
 test('a long walk-only plan never wins; a short one can', () => {
     const longWalk = itin([walk(0, 40)]);
     const transit = itin([walk(0, 5), bus('412', 9, 45, 'Stop')]);
