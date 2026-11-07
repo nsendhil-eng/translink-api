@@ -17,7 +17,7 @@
 // index: the trip_id index serves those lookups and the other one was 175 MB.
 
 require('dotenv').config();
-const { createClient } = require('@vercel/postgres');
+const { Client } = require('pg');
 const fetch = require('node-fetch');
 const yauzl = require('yauzl-promise');
 const { parse } = require('csv-parse');
@@ -143,7 +143,7 @@ async function ping(suffix = '') {
 
 async function main() {
   const started = Date.now();
-  const client = createClient({ connectionString: process.env.POSTGRES_URL_NON_POOLING });
+  const client = new Client({ connectionString: process.env.POSTGRES_URL_NON_POOLING });
   await client.connect();
   try {
     console.log(`Downloading ${GTFS_URL}…`);

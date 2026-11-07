@@ -5,9 +5,9 @@
 // instead of scanning every row. Typical speedup: 10-50x on a large stops table.
 
 require('dotenv').config();
-const { createPool } = require('@vercel/postgres');
+const { Pool } = require('pg');
 
-const pool = createPool({ connectionString: process.env.POSTGRES_URL });
+const pool = new Pool({ connectionString: process.env.POSTGRES_URL });
 
 async function run() {
     const client = await pool.connect();

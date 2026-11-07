@@ -1,7 +1,7 @@
 // index.js (Cleaned up and corrected)
 
 require('dotenv').config();
-const { createPool } = require('@vercel/postgres');
+const { Pool } = require('pg');
 const express = require('express');
 const fetch = require('node-fetch');
 const cors = require('cors');
@@ -13,9 +13,15 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 app.use(cors());
 
-const pool = createPool({
+const pool = new Pool({
     connectionString: process.env.POSTGRES_URL,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
 });
+// Neon drops idle connections. On an always-on server an unhandled error here would end the
+// process; the pool simply opens a new connection for the next query.
+pool.on('error', (err) => console.warn('Idle database connection closed:', err.message));
 
 const REALTIME_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates';
 const VEHICLE_POSITIONS_URL = 'https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions';
@@ -1805,6 +1811,15 @@ app.get('/api/plan', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
+// The website: on Vercel this was a separate static build, here the API serves it too
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+});
+
+// A deploy or restart sends SIGTERM: finish the requests in flight, then close
+process.on('SIGTERM', () => {
+    server.close(() => pool.end().finally(() => process.exit(0)));
+    setTimeout(() => process.exit(0), 10_000).unref();
 });

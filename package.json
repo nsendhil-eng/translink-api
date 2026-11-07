@@ -4,20 +4,24 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "ingest": "node scripts/ingest-gtfs.js"
+    "ingest": "node scripts/ingest-gtfs.js",
+    "start": "node index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@vercel/postgres": "^0.10.0",
     "cors": "^2.8.5",
     "csv-parse": "^6.1.0",
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "node-fetch": "^2.7.0",
+    "pg": "^8.23.1",
     "protobufjs": "^7.5.4",
     "yauzl-promise": "^4.0.0"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
