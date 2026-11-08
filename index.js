@@ -1745,7 +1745,7 @@ app.get('/api/health', async (req, res) => {
 });
 
 app.get('/api/plan', async (req, res) => {
-    const { fromLat, fromLon, toLat, toLon, time, date, modes } = req.query;
+    const { fromLat, fromLon, toLat, toLon, time, date, modes, arriveBy } = req.query;
     if (!fromLat || !fromLon || !toLat || !toLon) {
         return res.status(400).json({ error: 'fromLat, fromLon, toLat, toLon are required.' });
     }
@@ -1762,7 +1762,9 @@ app.get('/api/plan', async (req, res) => {
             `&mode=${planModes}` +
             `&numItineraries=5` +
             `&walkReluctance=5` +
-            `&maxWalkDistance=1500`;
+            `&maxWalkDistance=1500` +
+            // Optional: plan to arrive by `time` instead of leaving at it
+            (arriveBy === 'true' ? '&arriveBy=true' : '');
 
         const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' } });
         if (!otpRes.ok) return res.status(502).json({ error: 'OTP request failed.' });
