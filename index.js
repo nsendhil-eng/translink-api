@@ -877,6 +877,8 @@ app.get('/api/departures', async (req, res) => {
             let vehicleType = 'Train';
             if (s.route_type === 3) vehicleType = 'Bus';
             if (s.route_type === 4) vehicleType = 'Ferry';
+            // The Gold Coast G:link; it used to fall through to 'Train'
+            if (s.route_type === 0) vehicleType = 'Tram';
 
             return {
                 trip_id: s.trip_id,
