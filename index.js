@@ -102,6 +102,9 @@ const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/a
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
 const timetableFile = require('./lib/timetable-file');
+// The SQLite timetable when it's loaded, else null and the Postgres path runs.
+// TIMETABLE_SOURCE=postgres puts everything back on Postgres (rollback, comparisons).
+const fileTimetable = () => (process.env.TIMETABLE_SOURCE === 'postgres' ? null : timetableFile.current());
 const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, fromOverture, tidy, mergePlaces } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
@@ -755,6 +758,14 @@ app.get('/api/stops-near-me', async (req, res) => {
   try {
     const radiusInMeters = parseInt(radius, 10) || 500;
     const typeFilter = types ? types.split(',').map(Number) : null;
+    const tt = fileTimetable();
+    if (tt) {
+      return res.json(tt.stopsNearMe({
+        lat: parseFloat(lat), lon: parseFloat(lon), radius: radiusInMeters, types: typeFilter,
+        farRadius: Math.min(parseInt(req.query.far_radius, 10) || 0, 3000),
+        farTypes: String(req.query.far_types || '2,4').split(',').map(Number).filter(n => !isNaN(n))
+      }));
+    }
     let query = `
       SELECT s.stop_id AS id, s.stop_name AS name, s.stop_code, s.parent_station, s.servicing_routes, s.route_directions, s.route_types,
              parent_stop.stop_name AS parent_station_name, ROUND(ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography)::numeric)::int AS distance_m,
@@ -823,6 +834,16 @@ app.get('/api/stops-near-me', async (req, res) => {
 // towards the trip's following stops, and `isLastStop`. One query for the whole list.
 async function addDepartureHeadings(departures) {
     if (!departures.length) return;
+    const tt = fileTimetable();
+    if (tt) {
+        for (const d of departures) {
+            const next = tt.nextStops(d.trip_id, d.stop_sequence);
+            const here = tt.stopPosition(d.stop_id);
+            d.heading = here ? departureHeading(here, next) : null;
+            d.isLastStop = here ? next.length === 0 : false;
+        }
+        return;
+    }
     const { rows } = await pool.query(`
         SELECT q.i,
                ST_Y(here.location::geometry) AS lat, ST_X(here.location::geometry) AS lon,
@@ -856,7 +877,10 @@ app.get('/api/departures', async (req, res) => {
     const stopCodes = (req.query.stops || '001951,600284,600286').split(',').map(s => s.trim()).filter(Boolean);
 
     try {
-        const scheduledDepartures = await upcomingStopTimes((services) => `
+        const tt = fileTimetable();
+        const scheduledDepartures = tt
+            ? activeServiceDays(new Date()).flatMap(day => tt.scheduledDepartures(stopCodes, day).map(row => ({ ...row, day })))
+            : await upcomingStopTimes((services) => `
             SELECT
                 st.trip_id, s.stop_id, s.stop_name, st.stop_sequence, st.departure_time,s.platform_code,
                 t.trip_headsign, t.direction_id, t.shape_id, r.route_id, r.route_short_name, r.route_long_name, r.route_color, r.route_text_color,
@@ -926,7 +950,9 @@ app.get('/api/departures', async (req, res) => {
         
         let sorted = enrichedDepartures
             .filter(dep => dep && dep.secondsUntilDeparture > -120)
-            .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture);
+            // Ties in a fixed order, so a cut-off (top 15, per stop) keeps the same services every time
+            .sort((a, b) => a.secondsUntilDeparture - b.secondsUntilDeparture ||
+                (a.trip_id < b.trip_id ? -1 : a.trip_id > b.trip_id ? 1 : a.stop_sequence - b.stop_sequence));
 
         // Filter to trips that actually call at the get-off stop(s).
         // Accepts a comma-separated list of stop_ids to support multi-platform stations.
@@ -934,11 +960,10 @@ app.get('/api/departures', async (req, res) => {
             const getOffStopIds = req.query.get_off_stop.split(',').map(s => s.trim()).filter(Boolean);
             const tripIds = [...new Set(sorted.map(d => d.trip_id))];
             if (tripIds.length > 0 && getOffStopIds.length > 0) {
-                const { rows: validRows } = await pool.query(
+                const validTripIds = tt ? tt.tripsCallingAt(tripIds, getOffStopIds) : new Set((await pool.query(
                     'SELECT DISTINCT trip_id FROM stop_times WHERE trip_id = ANY($1) AND stop_id = ANY($2)',
                     [tripIds, getOffStopIds]
-                );
-                const validTripIds = new Set(validRows.map(r => r.trip_id));
+                )).rows.map(r => r.trip_id));
                 sorted = sorted.filter(d => validTripIds.has(d.trip_id));
             }
         }
