@@ -1,0 +1,30 @@
+# Monthly refresh of businesses and named places (Overture Maps) for /api/places.
+  # Overture publishes about once a month; this takes the latest release, checks it, and swaps it
+  # in for the `places` table. A failed run leaves the live table as it was, and GitHub emails the
+  # repo owner. Uses the same POSTGRES_URL_NON_POOLING secret as the weekly timetable import.
+  name: Monthly places import
+
+  on:
+    schedule:
+      - cron: '23 17 3 * *'   # the 3rd, 17:23 UTC = the 4th, 03:23 in Brisbane
+    workflow_dispatch:
+      inputs:
+        dry_run:
+          description: 'Load and check only, leave the live places alone'
+          type: boolean
+          default: false
+
+  jobs:
+    import:
+      runs-on: ubuntu-latest
+      timeout-minutes: 30
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-python@v5
+          with:
+            python-version: '3.12'
+        - run: pip install duckdb==1.5.6
+        - name: Import places
+          env:
+            POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
+          run: python3 scripts/import-places.py ${{ inputs.dry_run && '--dry-run' || '' }}
