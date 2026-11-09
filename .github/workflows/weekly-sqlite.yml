@@ -1,0 +1,41 @@
+  # Weekly SQLite timetable: builds the SEQ timetable as one file (scripts/build-sqlite.js), checks
+  # it, and publishes it as a GitHub release. The API downloads the newest release by itself
+  # (lib/timetable-file.js, TIMETABLE_URL) and swaps it in without a restart. A failed build
+  # publishes nothing, so the API keeps last week's file, and GitHub emails the repo owner.
+  # Needs no secrets: it reads Translink's public feed and writes only to this repo's releases.
+  name: Weekly SQLite timetable
+
+  on:
+    schedule:
+      - cron: '37 16 * * 6'   # Saturday 16:37 UTC = Sunday 02:37 in Brisbane, after the Postgres import
+    workflow_dispatch:
+
+  permissions:
+    contents: write
+
+  jobs:
+    build:
+      runs-on: ubuntu-latest
+      timeout-minutes: 20
+      steps:
+        - uses: actions/checkout@v4
+        - uses: actions/setup-node@v4
+          with:
+            node-version: 22
+            cache: npm
+        - run: npm ci
+        - name: Build and check
+          run: node scripts/build-sqlite.js --out data/seq.sqlite --dist dist
+        - name: Publish
+          env:
+            GH_TOKEN: ${{ github.token }}
+          run: |
+            version=$(node -p "require('./dist/manifest.json').version")
+            gh release create "timetable-$version" dist/seq.sqlite.gz dist/manifest.json \
+              --title "Timetable $version" --notes "SEQ timetable for the API, built from Translink's GTFS feed." --latest
+        - name: Keep the last 6
+          env:
+            GH_TOKEN: ${{ github.token }}
+          run: |
+            gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^timetable-' | sort -r | tail -n +7 |
+              while read tag; do gh release delete "$tag" --yes --cleanup-tag; done
