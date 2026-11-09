@@ -146,6 +146,7 @@ const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/a
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
 const timetableFile = require('./lib/timetable-file');
+const placesFile = require('./lib/places-file');
 // The SQLite timetable when it's loaded, else null and the Postgres path runs.
 // TIMETABLE_SOURCE=postgres puts everything back on Postgres (rollback, comparisons).
 const fileTimetable = () => (process.env.TIMETABLE_SOURCE === 'postgres' ? null : timetableFile.current());
@@ -1810,6 +1811,8 @@ const OVERTURE_SQL = `
     LIMIT 12`;
 
 async function overtureSearch(q, lat, lon) {
+    const file = process.env.TIMETABLE_SOURCE === 'postgres' ? null : placesFile.current();
+    if (file) return file.search(q, lat, lon).map(fromOverture);
     const { rows } = await pool.query(OVERTURE_SQL, [q, lat, lon]);
     return rows.map(fromOverture);
 }
@@ -1910,7 +1913,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The SQLite timetable (being introduced; nothing depends on it yet, so it doesn't affect `ok`)
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        timetableFile: timetableFile.status(), liveFeeds: feedStats, slowRequests });
+        timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
@@ -1988,6 +1991,7 @@ app.get('/api/plan', async (req, res) => {
 app.use(express.static(path.join(__dirname, 'public')));
 
 timetableFile.start();
+placesFile.start();
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

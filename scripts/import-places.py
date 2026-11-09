@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Load businesses and named places for SEQ from Overture Maps into Postgres (table `places`),
-for /api/places to search alongside Photon. Photon (OpenStreetMap) is good at addresses, streets
+Load businesses and named places for SEQ from Overture Maps, for /api/places to search alongside
+Photon: as a SQLite file for the API (--sqlite, with --dist for what gets published) and into
+Postgres (table `places`) unless --no-postgres. Photon (OpenStreetMap) is good at addresses, streets
 and landmarks but misses many businesses ("Rochedale Central Dentist"); Overture has them.
 
   pip install duckdb
   POSTGRES_URL_NON_POOLING=postgres://... python3 scripts/import-places.py [--release 2026-10-21.0] [--dry-run]
+      [--sqlite data/places.sqlite] [--dist dist] [--no-postgres]
 
 Reads Overture's free public GeoParquet on S3 (no account), keeps places with confidence >= 0.7
 that aren't closed, drops one-person "home service" listings (usually a home or suburb centre,
@@ -16,7 +18,8 @@ count, then swaps it in for `places` in one transaction. A failed run leaves `pl
 Licences: Overture places are CDLA-Permissive-2.0, with Foursquare-sourced rows Apache-2.0 and
 AllThePlaces rows CC0. Attribution: "© Overture Maps Foundation" in the app's credits.
 """
-import argparse, os, sys, time, urllib.request, xml.etree.ElementTree as ET
+import argparse, array, datetime, gzip, hashlib, json, os, re, shutil, sqlite3, sys, time, urllib.request, xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
 
 import duckdb
 
@@ -36,20 +39,87 @@ def latest_release():
     return sorted(releases)[-1]
 
 
+# The same trigrams as lib/trigram.js (pg_trgm's: letters and digits, lowercased, padded "  word ")
+WORD = re.compile(r'[^\W_]+')
+
+
+def trigrams(text):
+    out = set()
+    for word in WORD.findall(text.lower()):
+        padded = f'  {word} '
+        out.update(padded[i:i + 3] for i in range(len(padded) - 2))
+    return out
+
+
+def build_sqlite(db, out, dist, release, n):
+    """The places as one file for the API: rows, plus a trigram -> places index (lib/places-file.js)."""
+    tmp = out + '.building'
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    lite = sqlite3.connect(tmp)
+    lite.executescript("""
+        PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE places (pid INTEGER PRIMARY KEY, id TEXT, name TEXT NOT NULL, category TEXT, address TEXT,
+            locality TEXT, lat REAL NOT NULL, lon REAL NOT NULL);
+        CREATE TABLE place_trigrams (tri TEXT PRIMARY KEY, pids BLOB);   -- little-endian Int32s
+    """)
+    rows = db.execute('SELECT id, name, category, address, locality, lat, lon FROM seq ORDER BY id').fetchall()
+    postings = {}
+    numbered = []
+    for pid, row in enumerate(rows, 1):
+        numbered.append((pid, *row))
+        for t in trigrams(row[1]):
+            postings.setdefault(t, array.array('i')).append(pid)
+    lite.executemany('INSERT INTO places VALUES (?,?,?,?,?,?,?,?)', numbered)
+    if sys.byteorder != 'little':
+        sys.exit('This build assumes a little-endian machine')
+    lite.executemany('INSERT INTO place_trigrams VALUES (?,?)', ((t, p.tobytes()) for t, p in postings.items()))
+    if lite.execute('SELECT count(*) FROM places').fetchone()[0] != n:
+        sys.exit('The places file has the wrong row count: publishing nothing')
+    if not lite.execute("SELECT 1 FROM places WHERE lower(name) = 'suncorp stadium'").fetchone():
+        sys.exit('No "Suncorp Stadium" in the places file: publishing nothing')
+    now = datetime.datetime.now(datetime.timezone.utc)
+    version = now.astimezone(ZoneInfo('Australia/Brisbane')).strftime('%Y%m%d-%H%M')
+    lite.executemany('INSERT INTO meta VALUES (?,?)', [('version', version), ('built_at', now.isoformat()), ('release', release), ('rows', str(n))])
+    lite.commit()
+    lite.execute('VACUUM')
+    lite.close()
+    os.replace(tmp, out)
+    print(f'{out}: version {version}, {os.path.getsize(out) / 1048576:.0f} MB')
+    if dist:
+        os.makedirs(dist, exist_ok=True)
+        gz = os.path.join(dist, 'places.sqlite.gz')
+        with open(out, 'rb') as src, gzip.open(gz, 'wb', 6) as dst:
+            shutil.copyfileobj(src, dst)
+        with open(gz, 'rb') as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        with open(os.path.join(dist, 'manifest.json'), 'w') as f:
+            json.dump({'region': 'seq', 'version': version, 'builtAt': now.isoformat(), 'release': release,
+                       'file': 'places.sqlite.gz', 'bytes': os.path.getsize(gz), 'sha256': sha}, f, indent=2)
+        print(f'{gz}: {os.path.getsize(gz) / 1048576:.0f} MB, manifest written')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--release', help='Overture release, e.g. 2026-10-21.0 (default: the latest)')
     ap.add_argument('--dry-run', action='store_true', help='load and check places_new, leave places alone')
+    ap.add_argument('--sqlite', help='also write the places as a SQLite file for the API, at this path')
+    ap.add_argument('--dist', help='with --sqlite: write what gets published here (places.sqlite.gz, manifest.json)')
+    ap.add_argument('--no-postgres', action='store_true', help='leave Postgres out')
     args = ap.parse_args()
     pg_url = os.environ.get('POSTGRES_URL_NON_POOLING') or os.environ.get('POSTGRES_URL')
-    if not pg_url:
+    if not pg_url and not args.no_postgres:
         sys.exit('POSTGRES_URL_NON_POOLING is not set')
     release = args.release or latest_release()
     t0 = time.time()
     print(f'Overture release {release}')
 
     db = duckdb.connect()
-    db.execute("INSTALL httpfs; LOAD httpfs; INSTALL postgres; LOAD postgres; SET s3_region='us-west-2';")
+    db.execute("INSTALL httpfs; LOAD httpfs; SET s3_region='us-west-2';")
+    if not args.no_postgres:
+        db.execute("INSTALL postgres; LOAD postgres;")
     skip = ', '.join(f"'{c}'" for c in SKIP_CATEGORIES)
     db.execute(f"""
         CREATE TABLE seq AS
@@ -80,6 +150,11 @@ def main():
     print(f'{n:,} places in SEQ ({time.time() - t0:.0f}s)')
     if n < MIN_ROWS:
         sys.exit(f'Only {n:,} places (expected at least {MIN_ROWS:,}): leaving places alone')
+
+    if args.sqlite:
+        build_sqlite(db, args.sqlite, args.dist, release, n)
+    if args.no_postgres:
+        return
 
     db.execute("ATTACH '" + pg_url.replace("'", "''") + "' AS pg (TYPE postgres)")
     ex = lambda sql: db.execute('CALL postgres_execute(?, ?)', ['pg', sql])
