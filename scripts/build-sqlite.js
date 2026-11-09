@@ -27,7 +27,7 @@ const Database = require('better-sqlite3');
 const GTFS_URL = 'https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip';
 // The same checks as the Postgres import (scripts/ingest-gtfs.js)
 const MIN_DAYS_AHEAD = 14;
-const MIN_COUNTS = { routes: 300, trips: 50000, stops: 8000, stop_times: 1000000, calendar: 20 };
+const MIN_COUNTS = { routes: 300, trips: 50000, stops: 8000, stop_times: 1000000, shapes: 500, route_stops: 1000, calendar: 20 };
 
 /** "YYYYMMDD" this many days from now, in Brisbane */
 const brisbaneDate = (daysAhead) =>
@@ -98,9 +98,15 @@ async function main() {
             trip_headsign TEXT, direction_id INTEGER, block_id TEXT, shape_id TEXT);
         CREATE TABLE stops (sid INTEGER PRIMARY KEY, stop_id TEXT UNIQUE, stop_code TEXT, stop_name TEXT,
             lat REAL, lon REAL, location_type INTEGER, parent_station TEXT, platform_code TEXT, suburb TEXT,
-            servicing_routes TEXT, route_directions TEXT, route_types TEXT);
+            servicing_routes TEXT, route_directions TEXT, route_types TEXT, stop_desc TEXT);
         CREATE TABLE stop_times (sid INTEGER, dep INTEGER, tid INTEGER, seq INTEGER, arr INTEGER,
             pickup_type INTEGER, drop_off_type INTEGER, PRIMARY KEY (sid, dep, tid)) WITHOUT ROWID;
+        -- pts: little-endian Int32 pairs (lat, lon) in 1e-7 degrees, in shape order
+        CREATE TABLE shapes (shape_id TEXT PRIMARY KEY, min_lat REAL, min_lon REAL, max_lat REAL, max_lon REAL, pts BLOB);
+        -- Which stops each route serves, per direction and headsign (no trip sampling needed at request time).
+        -- direction_id -1 and headsign '' stand for missing values, as a primary key can't hold NULL.
+        CREATE TABLE route_stops (route_id TEXT, direction_id INTEGER, headsign TEXT, sid INTEGER,
+            PRIMARY KEY (route_id, direction_id, headsign, sid)) WITHOUT ROWID;
     `);
 
     const insert = (sql) => db.prepare(sql);
@@ -167,7 +173,7 @@ async function main() {
         if (!e) m.set(r.route_short_name, e = { type: num(r.route_type), dirs: new Set() });
         e.dirs.add(t.direction_id === '0' ? 'Inbound' : t.direction_id === '1' ? 'Outbound' : null);
     }
-    const insStop = insert('INSERT INTO stops VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
+    const insStop = insert('INSERT INTO stops VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
     tx(() => {
         for (const s of stops) {
             const m = perStop.get(s.sid);
@@ -179,13 +185,52 @@ async function main() {
                 // Same order as Postgres gives: jsonb keys shortest first, DISTINCT arrays sorted (null last)
                 m ? JSON.stringify(Object.fromEntries([...m].sort(([a], [b]) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0))
                     .map(([k, v]) => [k, [...v.dirs].sort((a, b) => (a === null) - (b === null) || (a < b ? -1 : a > b ? 1 : 0))]))) : null,
-                m ? JSON.stringify([...new Set([...m.values()].map(v => v.type))].sort((a, b) => a - b)) : null);
+                m ? JSON.stringify([...new Set([...m.values()].map(v => v.type))].sort((a, b) => a - b)) : null,
+                str(s.stop_desc));
         }
     })();
+
+    // Which stops each route serves
+    const seen = new Set();
+    const insRouteStop = insert('INSERT INTO route_stops VALUES (?,?,?,?)');
+    tx(() => {
+        for (const [sid, , tid] of st) {
+            const t = tripById.get(tid);
+            const key = `${t.route_id}\0${t.direction_id}\0${t.trip_headsign}\0${sid}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            insRouteStop.run(t.route_id, num(t.direction_id) ?? -1, t.trip_headsign ?? '', sid);
+        }
+    })();
+    console.log(`  route_stops ${seen.size} (${Date.now() - t0} ms)`);
+
+    // Shapes, one row each
+    const shapePts = new Map();
+    for await (const r of rowsOf(entries, 'shapes.txt')) {
+        let a = shapePts.get(r.shape_id);
+        if (!a) shapePts.set(r.shape_id, a = []);
+        a.push([num(r.shape_pt_sequence), Math.round(Number(r.shape_pt_lat) * 1e7), Math.round(Number(r.shape_pt_lon) * 1e7)]);
+    }
+    const insShape = insert('INSERT INTO shapes VALUES (?,?,?,?,?,?)');
+    tx(() => {
+        for (const [id, pts] of shapePts) {
+            pts.sort((a, b) => a[0] - b[0]);
+            const buf = Buffer.alloc(pts.length * 8);
+            let minLat = Infinity, minLon = Infinity, maxLat = -Infinity, maxLon = -Infinity;
+            pts.forEach(([, la, lo], i) => {
+                buf.writeInt32LE(la, i * 8); buf.writeInt32LE(lo, i * 8 + 4);
+                minLat = Math.min(minLat, la); maxLat = Math.max(maxLat, la);
+                minLon = Math.min(minLon, lo); maxLon = Math.max(maxLon, lo);
+            });
+            insShape.run(id, minLat / 1e7, minLon / 1e7, maxLat / 1e7, maxLon / 1e7, buf);
+        }
+    })();
+    console.log(`  shapes ${shapePts.size} (${Date.now() - t0} ms)`);
 
     console.log(`Indexes… (${Date.now() - t0} ms)`);
     db.exec(`
         CREATE INDEX stop_times_trip ON stop_times (tid, seq);
+        CREATE INDEX route_stops_sid ON route_stops (sid);
         CREATE INDEX stops_code ON stops (stop_code);
         CREATE INDEX stops_parent ON stops (parent_station);
         CREATE INDEX trips_route ON trips (route_id, direction_id);

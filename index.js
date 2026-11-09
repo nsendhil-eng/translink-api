@@ -149,6 +149,8 @@ const timetableFile = require('./lib/timetable-file');
 // The SQLite timetable when it's loaded, else null and the Postgres path runs.
 // TIMETABLE_SOURCE=postgres puts everything back on Postgres (rollback, comparisons).
 const fileTimetable = () => (process.env.TIMETABLE_SOURCE === 'postgres' ? null : timetableFile.current());
+// The file, once it has what the rest of the endpoints need (shapes, stops per route)
+const fullTimetable = () => { const t = fileTimetable(); return t?.complete ? t : null; };
 const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, fromOverture, tidy, mergePlaces } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
@@ -164,10 +166,13 @@ const servicesRunningOn = (dateParam, dayOfWeek) => `(
  * (today, plus yesterday's after-midnight trips early in the morning; see activeServiceDays).
  * `buildSql(services)` gets that day's service_id list; in the query $1 is the date, $2 the
  * earliest departure_time worth reading (filter `st.departure_time >= $2`), and `params`
- * follow from $3. Each row comes back with `day`, for scheduledUtc.
+ * follow from $3. `fromFile(tt, day)` is the same read from the timetable file.
+ * Each row comes back with `day`, for scheduledUtc.
  */
-async function upcomingStopTimes(buildSql, params, now = new Date()) {
+async function upcomingStopTimes(buildSql, params, now, fromFile) {
     const days = activeServiceDays(now);
+    const tt = fullTimetable();
+    if (tt) return days.flatMap(d => fromFile(tt, d).map(row => ({ ...row, day: d })));
     const results = await Promise.all(days.map(d =>
         pool.query(buildSql(servicesRunningOn('$1', d.dayOfWeek)), [d.dateString, d.fromTime, ...params])));
     return results.flatMap((r, i) => r.rows.map(row => ({ ...row, day: days[i] })));
@@ -194,14 +199,15 @@ let railStationsPromise = null;          // every station: { stop_id, stop_name,
 const needsSection = (a) => a.stopIds.size === 0 && /translink\.com\.au\/updates\//.test(a.url || '') &&
     [...a.routeCodes].some(c => /^[A-Z]{4}$/.test(c));   // rail route codes: "BRIP"
 
-const railStations = () => railStationsPromise ??= pool.query(`
+const railStations = () => fullTimetable()?.railStations() ?? (railStationsPromise ??= pool.query(`
     SELECT stop_id, stop_name, ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lon
     FROM stops WHERE location_type = 1 AND stop_name ILIKE '% station'
-`).then(r => r.rows).catch(e => { railStationsPromise = null; throw e; });
+`).then(r => r.rows).catch(e => { railStationsPromise = null; throw e; }));
 
 /** Stations along a train trip from one station to the other, both included */
 async function stationsBetween(from, to) {
-    const { rows } = await pool.query(`
+    const tt = fullTimetable();
+    const { rows } = tt ? { rows: tt.stationIdsAlongTrain(from.stop_id, to.stop_id).map(stop_id => ({ stop_id })) } : await pool.query(`
         WITH trip AS (
             SELECT st.trip_id FROM stop_times st JOIN stops s ON s.stop_id = st.stop_id
             JOIN trips t ON t.trip_id = st.trip_id JOIN routes r ON r.route_id = t.route_id
@@ -274,6 +280,8 @@ app.get('/api/search', async (req, res) => {
     if (!q || q.length < 3) { return res.json({ stops: [], routes: [] }); }
 
     try {
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.searchV1(q));
         const searchQuery = `%${q}%`;
 
         // Step 1: Find initial matching stops and their parent stations.
@@ -364,6 +372,8 @@ app.get('/api/v2/search', async (req, res) => {
         const lat = parseFloat(req.query.lat);
         const lon = parseFloat(req.query.lon);
         const hasLocation = !isNaN(lat) && !isNaN(lon);
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.searchV2(q, hasLocation ? lat : null, hasLocation ? lon : null));
 
         // Split query into tokens for order-independent matching
         // e.g. "stop 10 ann" matches "Ann Street Stop 10"
@@ -486,6 +496,11 @@ app.get('/api/stops-for-route', async (req, res) => {
     const { route_id, headsign } = req.query;
     if (!route_id || !headsign) { return res.status(400).json({ error: 'route_id and headsign are required.' }); }
     try {
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.stopsOfRouteHeadsign(route_id, headsign).map(s => ({
+            id: s.stop_id, name: s.stop_name, stop_code: s.stop_code, servicing_routes: s.servicing_routes,
+            route_directions: s.route_directions, latitude: s.lat, longitude: s.lon
+        })));
         const { rows } = await pool.query(`
             SELECT DISTINCT s.stop_id as id, s.stop_name as name, s.stop_code, s.servicing_routes, s.route_directions,
                    ST_Y(s.location::geometry) AS latitude,
@@ -534,7 +549,10 @@ app.get('/api/vehicles-near-me', async (req, res) => {
         // Enrich with route info from the DB
         const tripIds = nearby.map(v => v.tripId).filter(Boolean);
         const routeByTrip = {};
-        if (tripIds.length > 0) {
+        const tt = fullTimetable();
+        if (tt) {
+            for (const id of tripIds) { const t = tt.trip(id); if (t) routeByTrip[id] = t.route; }
+        } else if (tripIds.length > 0) {
             const { rows } = await pool.query(`
                 SELECT t.trip_id, r.route_short_name, r.route_color, r.route_type
                 FROM trips t
@@ -570,6 +588,10 @@ app.get('/api/shapes-near-me', async (req, res) => {
     if (isNaN(lat) || isNaN(lon)) return res.status(400).json({ error: 'lat and lon are required.' });
     const delta = 0.018; // ~2km bounding box in degrees
     try {
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.shapesNearMe(lat, lon, delta)
+            .filter(r => r.points.length >= 2)
+            .map(r => ({ routeId: r.route_id, routeColor: r.route_color, points: r.points })));
         const { rows } = await pool.query(`
             SELECT DISTINCT ON (r.route_id)
                 r.route_id,
@@ -614,7 +636,11 @@ const TRIP_VEHICLES_MAX = 20;
 const shapePointsCache = new Map();   // shape_id -> [[lat, lon], ...]
 async function shapePoints(shapeIds) {
     const missing = shapeIds.filter(id => !shapePointsCache.has(id));
-    if (missing.length) {
+    const tt = fullTimetable();
+    if (missing.length && tt) {
+        if (shapePointsCache.size > 500) shapePointsCache.clear();
+        for (const id of missing) shapePointsCache.set(id, tt.simplifiedShape(id, 0.00003));
+    } else if (missing.length) {
         const { rows } = await pool.query(`
             SELECT shape_id, ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00003)) AS geojson
             FROM route_shapes WHERE shape_id = ANY($1)
@@ -652,7 +678,10 @@ app.get('/api/trip-vehicles', async (req, res) => {
         const live = tripIds.map(id => [id, byTrip.get(id)]).filter(([, vp]) => vp?.position);
         if (!live.length) return res.json({ vehicles: [] });
 
-        const { rows } = await pool.query('SELECT trip_id, shape_id FROM trips WHERE trip_id = ANY($1)', [live.map(([id]) => id)]);
+        const tt = fullTimetable();
+        const { rows } = tt
+            ? { rows: live.map(([id]) => ({ trip_id: id, shape_id: tt.trip(id)?.shape_id ?? null })) }
+            : await pool.query('SELECT trip_id, shape_id FROM trips WHERE trip_id = ANY($1)', [live.map(([id]) => id)]);
         const shapeOf = new Map(rows.map(r => [r.trip_id, r.shape_id]));
         const shapes = await shapePoints([...new Set(rows.map(r => r.shape_id).filter(Boolean))]);
 
@@ -688,7 +717,13 @@ app.get('/api/paths-ahead', async (req, res) => {
     if (!items.length) return res.json({ paths: {} });
     try {
         const pairs = items.map(i => i.split(':'));
-        const { rows } = await pool.query(`
+        const tt = fullTimetable();
+        const { rows } = tt ? {
+            rows: pairs.flatMap(([shape_id, stop_id]) => {
+                const here = tt.stopPosition(stop_id), points = tt.simplifiedShape(shape_id, 0.00003);
+                return here && points.length ? [{ shape_id, stop_id, points, lat: here[0], lon: here[1] }] : [];
+            })
+        } : await pool.query(`
             SELECT q.shape_id, q.stop_id,
                    ST_AsGeoJSON(ST_Simplify(rs.shape::geometry, 0.00003)) AS geojson,
                    ST_Y(s.location::geometry) AS lat, ST_X(s.location::geometry) AS lon
@@ -698,7 +733,7 @@ app.get('/api/paths-ahead', async (req, res) => {
         `, [pairs.map(p => p[0]), pairs.map(p => p[1])]);
         const paths = {};
         for (const r of rows) {
-            const path = pathAhead(geojsonToLatLon(r.geojson), [Number(r.lat), Number(r.lon)], meters);
+            const path = pathAhead(r.points ?? geojsonToLatLon(r.geojson), [Number(r.lat), Number(r.lon)], meters);
             if (path.length) paths[`${r.shape_id}:${r.stop_id}`] = path;
         }
         res.set('Cache-Control', 'public, max-age=86400, s-maxage=86400');
@@ -713,6 +748,11 @@ app.get('/api/route-shape', async (req, res) => {
     const { shape_id } = req.query;
     if (!shape_id) { return res.status(400).json({ error: 'shape_id is required.' }); }
     try {
+        const tt = fullTimetable();
+        if (tt) {
+            const points = tt.shape(shape_id);
+            return res.json(points.length ? { type: 'LineString', coordinates: points.map(([la, lo]) => [lo, la]) } : null);
+        }
         const { rows } = await pool.query(`
             SELECT ST_AsGeoJSON(shape) as shape_geojson
             FROM route_shapes
@@ -731,7 +771,12 @@ app.get('/api/route-info', async (req, res) => {
         return res.status(400).json({ error: 'route_id is required.' });
     }
     try {
-        const { rows } = await pool.query(`
+        const tt = fullTimetable();
+        const route = tt?.route(route_id);
+        const { rows } = tt ? { rows: route ? [{
+            route_short_name: route.route_short_name, route_long_name: route.route_long_name,
+            route_color: route.route_color, route_text_color: route.route_text_color
+        }] : [] } : await pool.query(`
             SELECT route_short_name, route_long_name, route_color, route_text_color
             FROM routes
             WHERE route_id = $1;
@@ -754,6 +799,10 @@ app.get('/api/stops-for-route-at-station', async (req, res) => {
     }
     try {
         // Find all child stops of the parent station that are serviced by the specific route and headsign.
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.stopsOfRouteHeadsign(route_id, headsign).filter(s => s.parent_station === parent_station).map(s => ({
+            id: s.stop_id, name: s.stop_name, stop_code: s.stop_code, parent_station: s.parent_station, latitude: s.lat, longitude: s.lon
+        })));
         const { rows } = await pool.query(`
             SELECT s.stop_id as id, s.stop_name as name, s.stop_code, s.parent_station,
                    ST_Y(s.location::geometry) AS latitude, ST_X(s.location::geometry) AS longitude
@@ -780,6 +829,8 @@ app.get('/api/routes-for-stops', async (req, res) => {
     }
     try {
         const stopCodesArray = stop_codes.split(',');
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.routesForStopCodes(stopCodesArray));
         const { rows } = await pool.query(`
             SELECT DISTINCT r.route_short_name, r.route_type, r.route_color, r.route_text_color
             FROM routes r
@@ -1067,6 +1118,9 @@ app.get('/api/trip-details', async (req, res) => {
     const { trip_id, stop_sequence } = req.query;
     if (!trip_id || !stop_sequence) { return res.status(400).json({ error: 'trip_id and stop_sequence are required.' }); }
     try {
+        const tt = fullTimetable();
+        if (tt) return res.json(tt.tripStopTimes(trip_id).filter(s => s.stop_sequence > Number(stop_sequence))
+            .map(s => ({ stop_name: s.stop_name, departure_time: s.departure_time })));
         const { rows } = await pool.query(`
             SELECT s.stop_name, st.departure_time FROM stop_times st
             JOIN stops s ON st.stop_id = s.stop_id
@@ -1104,7 +1158,7 @@ app.get('/api/stop-live', async (req, res) => {
             WHERE st.stop_id = ANY($3)
             AND st.departure_time >= $2
             AND t.service_id IN ${services}
-        `, [stopIds]);
+        `, [stopIds], new Date(), (tt, d) => tt.upcoming(stopIds, d));
 
         // Convert GTFS departure_time to UTC, filter to upcoming, take first 2
         const synchronizedNow = new Date();
@@ -1121,14 +1175,15 @@ app.get('/api/stop-live', async (req, res) => {
         // For each upcoming trip: get shape, split at stop, attach vehicle
         const trips = await Promise.all(upcoming.map(async (row) => {
             // Get simplified shape as GeoJSON from route_shapes
-            const { rows: shapeRows } = await pool.query(`
+            const tt = fullTimetable();
+            const { rows: shapeRows } = tt ? { rows: [] } : await pool.query(`
                 SELECT ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00008)) AS geojson
                 FROM route_shapes
                 WHERE shape_id = $1
             `, [row.shape_id]);
 
             // Split the shape at the point closest to the stop
-            const shapePoints = shapeRows.length > 0 ? geojsonToLatLon(shapeRows[0].geojson) : [];
+            const shapePoints = tt ? tt.simplifiedShape(row.shape_id, 0.00008) : shapeRows.length > 0 ? geojsonToLatLon(shapeRows[0].geojson) : [];
             const stopLat = parseFloat(row.stop_lat);
             const stopLon = parseFloat(row.stop_lon);
             let splitIdx = 0;
@@ -1196,6 +1251,7 @@ app.get('/api/trip-stops', async (req, res) => {
 
     try {
         const syncNow = new Date();
+        const tt = fullTimetable();
         // The service day the trip runs on: today, unless it's one of yesterday's late trips
         let day = serviceDay(syncNow);
 
@@ -1205,7 +1261,7 @@ app.get('/api/trip-stops', async (req, res) => {
             let nearestStopId = null;
 
             if (hasLocation) {
-                const { rows: nearbyStops } = await pool.query(`
+                const { rows: nearbyStops } = tt ? { rows: [{ stop_id: tt.routeStopFor(route_id, dirId, userLat, userLon) }] } : await pool.query(`
                     SELECT DISTINCT s.stop_id,
                            ST_Distance(s.location, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography) AS dist
                     FROM stops s
@@ -1220,7 +1276,7 @@ app.get('/api/trip-stops', async (req, res) => {
 
             if (!nearestStopId) {
                 // Fall back to any stop on the route
-                const { rows } = await pool.query(`
+                const { rows } = tt ? { rows: [{ stop_id: tt.routeStopFor(route_id, dirId) }] } : await pool.query(`
                     SELECT DISTINCT s.stop_id FROM stops s
                     JOIN stop_times st ON s.stop_id = st.stop_id
                     JOIN trips t ON st.trip_id = t.trip_id
@@ -1239,7 +1295,7 @@ app.get('/api/trip-stops', async (req, res) => {
                   AND t.route_id = $4 AND t.direction_id = $5
                   AND st.departure_time >= $2
                   AND t.service_id IN ${services}
-            `, [nearestStopId, route_id, dirId], syncNow);
+            `, [nearestStopId, route_id, dirId], syncNow, (file, d) => file.upcoming([nearestStopId], d, { routeId: route_id, directionId: dirId }));
 
             // Pick the next trip by its LIVE time at the stop: a bus running 5 min late is
             // still coming after its scheduled time has passed
@@ -1259,7 +1315,7 @@ app.get('/api/trip-stops', async (req, res) => {
             // A trip asked for by id: after midnight it may be one of yesterday's late trips
             const yesterday = activeServiceDays(syncNow).find(d => d.dateString !== day.dateString);
             if (yesterday) {
-                const { rows } = await pool.query(`
+                const { rows } = tt ? { rows: tt.tripRunsOn(trip_id, yesterday) ? [1] : [] } : await pool.query(`
                     SELECT 1 FROM trips t
                     WHERE t.trip_id = $2 AND t.service_id IN ${servicesRunningOn('$1', yesterday.dayOfWeek)}
                       AND (SELECT max(departure_time) FROM stop_times WHERE trip_id = $2) >= $3
@@ -1271,13 +1327,14 @@ app.get('/api/trip-stops', async (req, res) => {
         if (!trip_id) return res.status(400).json({ error: 'trip_id or (route_id + direction_id) required.' });
 
         // Parallel: trip info, stop list, GTFS-RT trip updates + vehicle positions
+        const fileTrip = tt?.trip(trip_id);
         const [tripInfoResult, stopResult, tripUpdates, vehiclePositions] = await Promise.all([
-            pool.query(`
+            tt ? { rows: fileTrip ? [{ ...fileTrip, ...fileTrip.route }] : [] } : pool.query(`
                 SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
                        r.route_short_name, r.route_color, r.route_text_color, r.route_type
                 FROM trips t JOIN routes r ON r.route_id = t.route_id WHERE t.trip_id = $1
             `, [trip_id]),
-            pool.query(`
+            tt ? { rows: tt.tripStopTimes(trip_id) } : pool.query(`
                 SELECT st.stop_sequence, st.departure_time, s.stop_id, s.stop_name,
                        ST_Y(s.location::geometry) AS lat, ST_X(s.location::geometry) AS lon
                 FROM stop_times st JOIN stops s ON st.stop_id = s.stop_id
@@ -1317,7 +1374,9 @@ app.get('/api/trip-stops', async (req, res) => {
 
         // Get shape
         let shape = [];
-        if (tripInfo.shape_id) {
+        if (tripInfo.shape_id && tt) {
+            shape = tt.simplifiedShape(tripInfo.shape_id, 0.00008);
+        } else if (tripInfo.shape_id) {
             const { rows: shapeRows } = await pool.query(`
                 SELECT ST_AsGeoJSON(ST_Simplify(shape::geometry, 0.00008)) AS geojson
                 FROM route_shapes WHERE shape_id = $1
@@ -1453,7 +1512,7 @@ app.get('/api/next-trips', async (req, res) => {
                   AND t.route_id = $4 AND t.direction_id = $5
                   AND st.departure_time >= $2
                   AND t.service_id IN ${services}
-            `, [stop_id, route_id, direction_id], syncNow),
+            `, [stop_id, route_id, direction_id], syncNow, (tt, d) => tt.upcoming([stop_id], d, { routeId: route_id, directionId: direction_id })),
             getTripUpdates(),
             getVehiclePositions().catch(() => null)
         ]);
@@ -1554,9 +1613,10 @@ app.get('/api/alerts', async (req, res) => {
         // Stops expand to their station (parent + sibling platforms) and to every route that
         // serves them: route-wide alerts like track closures name routes, not stops, and a
         // closed station has no departures for the client to take route ids from
+        const tt = fullTimetable();
         const [alerts, stopRows, servingRows] = await Promise.all([
             getAlerts().then(c => c.index),
-            stopIds.length
+            tt ? tt.stopsWithSiblings(stopIds) : stopIds.length
                 ? pool.query(`
                     SELECT s.stop_id, NULLIF(s.parent_station, '') AS parent
                     FROM stops s
@@ -1564,7 +1624,7 @@ app.get('/api/alerts', async (req, res) => {
                        OR s.parent_station IN (SELECT parent_station FROM stops WHERE stop_id = ANY($1) AND parent_station <> '')
                   `, [stopIds]).then(r => r.rows)
                 : Promise.resolve([]),
-            stopIds.length
+            tt ? tt.routeIdsAt(stopIds).map(route_id => ({ route_id })) : stopIds.length
                 ? pool.query(`
                     SELECT DISTINCT t.route_id
                     FROM stop_times st JOIN trips t ON t.trip_id = st.trip_id
@@ -1621,9 +1681,10 @@ app.get('/api/alerts/all', async (req, res) => {
     const hasLocation = !isNaN(lat) && !isNaN(lon);
     try {
         const now = Math.floor(Date.now() / 1000);
+        const tt = fullTimetable();
         const [alerts, stopRows] = await Promise.all([
             getAlerts().then(c => c.index),
-            hasLocation
+            hasLocation && tt ? tt.nearestStops(lat, lon, ALERTS_NEARBY_SCAN) : hasLocation
                 // KNN on the location index: the nearest few thousand stops, closest first
                 ? pool.query(`
                     SELECT stop_id, stop_name, NULLIF(parent_station, '') AS parent, servicing_routes,
@@ -1807,7 +1868,9 @@ async function healthChecks() {
     return Promise.all([
         timed('timetable', async () => {
             // When the database last started: Neon stops it when idle, and a cold start is slow
-            const { rows } = await pool.query('SELECT max(end_date) AS e, pg_postmaster_start_time() AS started FROM calendar');
+            const file = fullTimetable();
+            const { rows } = file ? { rows: [{ e: file.meta.calendar_end, started: null }] }
+                : await pool.query('SELECT max(end_date) AS e, pg_postmaster_start_time() AS started FROM calendar');
             const end = rows[0].e;
             const dbStartedAt = rows[0].started;
             const today = serviceDay().dateString;
