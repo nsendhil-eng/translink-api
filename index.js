@@ -13,6 +13,20 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 app.use(cors());
 
+// Slow API calls, newest first, for /api/health: "did the morning's first open wait on something?"
+const SLOW_REQUEST_MS = 700;
+const slowRequests = [];
+app.use('/api', (req, res, next) => {
+    const t0 = Date.now();
+    res.on('finish', () => {
+        const ms = Date.now() - t0;
+        if (ms < SLOW_REQUEST_MS) return;
+        slowRequests.unshift({ at: new Date(t0).toISOString(), path: req.path, ms, status: res.statusCode });
+        slowRequests.length = Math.min(slowRequests.length, 30);
+    });
+    next();
+});
+
 const pool = new Pool({
     connectionString: process.env.POSTGRES_URL,
     max: 10,
@@ -1722,13 +1736,15 @@ async function healthChecks() {
     };
     return Promise.all([
         timed('timetable', async () => {
-            const { rows } = await pool.query('SELECT max(end_date) AS e FROM calendar');
+            // When the database last started: Neon stops it when idle, and a cold start is slow
+            const { rows } = await pool.query('SELECT max(end_date) AS e, pg_postmaster_start_time() AS started FROM calendar');
             const end = rows[0].e;
+            const dbStartedAt = rows[0].started;
             const today = serviceDay().dateString;
             const days = Math.round((Date.UTC(+end.slice(0, 4), +end.slice(4, 6) - 1, +end.slice(6)) -
                 Date.UTC(+today.slice(0, 4), +today.slice(4, 6) - 1, +today.slice(6))) / 86_400_000);
             if (days < TIMETABLE_MIN_DAYS) throw new Error(`timetable ends ${end}, ${days} days away`);
-            return { validUntil: end, daysLeft: days };
+            return { validUntil: end, daysLeft: days, dbStartedAt };
         }),
         timed('realtime', async () => {
             const feed = (await getTripUpdates()).feed;
@@ -1759,7 +1775,7 @@ app.get('/api/health', async (req, res) => {
         healthCache = { at: Date.now(), checks: await healthChecks() };
     }
     const ok = healthCache.checks.every(c => c.ok);
-    res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks });
+    res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
