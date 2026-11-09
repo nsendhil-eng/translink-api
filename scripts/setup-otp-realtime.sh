@@ -12,7 +12,8 @@ OTP_DIR=/home/ubuntu/otp
 LIVE=$OTP_DIR/graphs/seq
 CONFIG=$LIVE/router-config.json
 REBUILD=$OTP_DIR/rebuild.sh
-FEED=https://gtfsrt.api.translink.com.au/api/realtime/SEQ/TripUpdates
+# Translink's feed, cleaned by the API: see lib/otp-feed.js
+FEED=https://transit.sn-app.space/api/otp-trip-updates
 PLAN='http://localhost:8080/otp/routers/default/plan?fromPlace=-27.4838,152.9937&toPlace=-27.4656,153.0194&mode=TRANSIT,WALK&numItineraries=5'
 
 # grep -c, not -q: -q stops reading early, which pipefail would report as a failed curl

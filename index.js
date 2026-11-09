@@ -14,7 +14,9 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 // Compressed answers: a 17 KB departures list becomes about 3 KB, which fits in the first burst
 // a connection may send, saving Sydney <-> Brisbane round trips between the server and Cloudflare
-app.use(require('compression')());
+const compression = require('compression');
+// The planner's feed is about 1 MB every 30 s; protobuf isn't compressed by default
+app.use(compression({ filter: (req, res) => req.path === '/api/otp-trip-updates' || compression.filter(req, res) }));
 
 // Slow API calls, newest first, for /api/health: "did the morning's first open wait on something?"
 const SLOW_REQUEST_MS = 700;
@@ -100,9 +102,12 @@ function createFeedCache(name, url, ttlMs, buildIndex) {
         timer = setTimeout(tick, ttlMs);
         timer.unref();
     };
-    return async function get() {
-        lastAskedAt = Date.now();
-        if (!timer) { stats.warm = true; timer = setTimeout(tick, ttlMs); timer.unref(); }
+    // keepWarm false: a caller that doesn't count as the app being in use (the planner polls all night)
+    return async function get({ keepWarm = true } = {}) {
+        if (keepWarm) {
+            lastAskedAt = Date.now();
+            if (!timer) { stats.warm = true; timer = setTimeout(tick, ttlMs); timer.unref(); }
+        }
         const age = current ? Date.now() - current.fetchedAt : Infinity;
         if (age < ttlMs + WARM_SLACK_MS) return current;
         try {
@@ -145,6 +150,7 @@ const {
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
+const { cleanTripUpdates } = require('./lib/otp-feed');
 const timetableFile = require('./lib/timetable-file');
 const placesFile = require('./lib/places-file');
 // The SQLite timetable when it's loaded, else null and the Postgres path runs.
@@ -1559,6 +1565,33 @@ app.get('/api/next-trips', async (req, res) => {
     }
 });
 
+// --- CLEANED LIVE FEED FOR THE PLANNER (see lib/otp-feed.js) -----------------------------
+// GET /api/otp-trip-updates -> GTFS-RT protobuf; OTP polls this instead of Translink
+const OTP_FEED_CACHE_MS = 20_000;
+let otpFeedCache = null;   // { at, source, bytes, stats }
+app.get('/api/otp-trip-updates', async (req, res) => {
+    const tt = fullTimetable();
+    // OTP keeps its last data through an error; better than an uncleaned feed
+    if (!tt) return res.status(503).json({ error: 'The timetable file is still loading.' });
+    try {
+        const updates = await getTripUpdates({ keepWarm: false });
+        if (!otpFeedCache || otpFeedCache.source !== updates.feed || Date.now() - otpFeedCache.at > OTP_FEED_CACHE_MS) {
+            const vehicles = await getVehiclePositions({ keepWarm: false }).catch(() => null);
+            const { entity, stats } = cleanTripUpdates(updates.feed.entity, {
+                stopsOfTrip: (id) => tt.tripStopTimes(id),
+                vehicleOfTrip: (id) => vehicles?.index.get(id),
+                nowS: Date.now() / 1000
+            });
+            const bytes = Buffer.from(gtfsRealtime.encode(gtfsRealtime.create({ header: updates.feed.header, entity })).finish());
+            otpFeedCache = { at: Date.now(), source: updates.feed, bytes, stats };
+        }
+        res.type('application/x-protobuf').send(otpFeedCache.bytes);
+    } catch (error) {
+        console.error('otp-trip-updates failed:', error);
+        res.status(502).json({ error: 'Live feed unavailable.' });
+    }
+});
+
 // --- PLAN ENDPOINT ---
 // GET /api/plan?fromLat=X&fromLon=Y&toLat=A&toLon=B&time=08:00am&date=2026-03-09
 // Proxies to OTP and returns cleaned itineraries
@@ -1921,7 +1954,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        deploy, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
+        deploy, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
