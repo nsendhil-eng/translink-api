@@ -12,6 +12,9 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3001;
 app.use(cors());
+// Compressed answers: a 17 KB departures list becomes about 3 KB, which fits in the first burst
+// a connection may send, saving Sydney <-> Brisbane round trips between the server and Cloudflare
+app.use(require('compression')());
 
 // Slow API calls, newest first, for /api/health: "did the morning's first open wait on something?"
 const SLOW_REQUEST_MS = 700;
