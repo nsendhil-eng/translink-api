@@ -171,7 +171,8 @@ async function main() {
     tx(() => {
         for (const s of stops) {
             const m = perStop.get(s.sid);
-            const names = m ? [...m.keys()] : null;
+            // Sorted, as Postgres's STRING_AGG over the grouped rows gives them
+            const names = m ? [...m.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)) : null;
             insStop.run(s.sid, s.stop_id, str(s.stop_code), str(s.stop_name), num(s.stop_lat), num(s.stop_lon), num(s.location_type),
                 str(s.parent_station), str(s.platform_code), str(s.suburb),
                 names ? names.join(', ') : null,
