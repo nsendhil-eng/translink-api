@@ -101,6 +101,7 @@ const {
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
+const timetableFile = require('./lib/timetable-file');
 const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, fromOverture, tidy, mergePlaces } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
@@ -1775,7 +1776,9 @@ app.get('/api/health', async (req, res) => {
         healthCache = { at: Date.now(), checks: await healthChecks() };
     }
     const ok = healthCache.checks.every(c => c.ok);
-    res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks, slowRequests });
+    // The SQLite timetable (being introduced; nothing depends on it yet, so it doesn't affect `ok`)
+    res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
+        timetableFile: timetableFile.status(), slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
@@ -1852,6 +1855,7 @@ app.get('/api/plan', async (req, res) => {
 // The website: on Vercel this was a separate static build, here the API serves it too
 app.use(express.static(path.join(__dirname, 'public')));
 
+timetableFile.start();
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

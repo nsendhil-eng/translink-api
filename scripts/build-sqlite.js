@@ -1,7 +1,11 @@
 // Builds the SEQ timetable as one SQLite file, for the API to read in-process (Phase 0 of moving
 // off a database server: see docs in the PR). Same source as scripts/ingest-gtfs.js.
 //
-//   node scripts/build-sqlite.js [--zip path/to/SEQ_GTFS.zip] [--out data/seq.sqlite]
+//   node scripts/build-sqlite.js [--zip path/to/SEQ_GTFS.zip] [--out data/seq.sqlite] [--dist dist]
+//
+// With --dist, also writes what gets published (weekly, as a GitHub release, for the API to
+// download; see lib/timetable-file.js): seq.sqlite.gz and manifest.json (version, checksum).
+// The file is checked first (row counts, calendar far enough ahead): a bad feed publishes nothing.
 //
 // Layout, chosen for the API's lookups rather than mirroring GTFS:
 //  - stops / trips get small integer keys (sid, tid); stop_times uses them, which keeps the
@@ -11,6 +15,9 @@
 //  - times are seconds after midnight of the service day (GTFS times pass 24:00)
 //  - the per-stop route summaries the import precomputes in Postgres are computed here too
 const fs = require('fs');
+const zlib = require('zlib');
+const crypto = require('crypto');
+const { pipeline } = require('stream/promises');
 const path = require('path');
 const fetch = require('node-fetch');
 const yauzl = require('yauzl-promise');
@@ -18,6 +25,27 @@ const { parse } = require('csv-parse');
 const Database = require('better-sqlite3');
 
 const GTFS_URL = 'https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip';
+// The same checks as the Postgres import (scripts/ingest-gtfs.js)
+const MIN_DAYS_AHEAD = 14;
+const MIN_COUNTS = { routes: 300, trips: 50000, stops: 8000, stop_times: 1000000, calendar: 20 };
+
+/** "YYYYMMDD" this many days from now, in Brisbane */
+const brisbaneDate = (daysAhead) =>
+    new Date(Date.now() + daysAhead * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Australia/Brisbane' }).replace(/-/g, '');
+
+function check(db) {
+    const problems = [];
+    for (const [table, min] of Object.entries(MIN_COUNTS)) {
+        const n = db.prepare(`SELECT count(*) n FROM ${table}`).get().n;
+        console.log(`  ${table}: ${n.toLocaleString()}`);
+        if (n < min) problems.push(`${table} has ${n} rows (expected at least ${min})`);
+    }
+    const end = db.prepare('SELECT max(end_date) e FROM calendar').get().e;
+    const needed = brisbaneDate(MIN_DAYS_AHEAD);
+    console.log(`  calendar runs to ${end} (needs ${needed} or later)`);
+    if (!end || end < needed) problems.push(`calendar ends ${end}, before ${needed}`);
+    if (problems.length) throw new Error(`The timetable failed its checks:\n - ${problems.join('\n - ')}`);
+}
 
 const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
 
@@ -162,13 +190,35 @@ async function main() {
         CREATE INDEX trips_route ON trips (route_id, direction_id);
         CREATE INDEX calendar_dates_date ON calendar_dates (date);
     `);
+    console.log('Checking…');
+    check(db);
+    const builtAt = new Date();
+    // The version names the week's file: when it was built, in Brisbane ("20261115-0230")
+    const version = builtAt.toLocaleString('sv-SE', { timeZone: 'Australia/Brisbane' }).replace(/[-:]/g, '').replace(' ', '-').slice(0, 13);
     const ins = db.prepare('INSERT INTO meta VALUES (?, ?)');
-    ins.run('built_at', new Date().toISOString());
+    ins.run('version', version);
+    ins.run('built_at', builtAt.toISOString());
     ins.run('calendar_end', db.prepare('SELECT max(end_date) e FROM calendar').get().e);
+    ins.run('feed_sha256', crypto.createHash('sha256').update(buffer).digest('hex'));
     db.exec('ANALYZE; VACUUM;');
     db.close();
     fs.renameSync(tmp, out);
-    console.log(`✅ ${out}: ${(fs.statSync(out).size / 1048576).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+    console.log(`✅ ${out}: version ${version}, ${(fs.statSync(out).size / 1048576).toFixed(0)} MB in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+
+    const dist = arg('--dist');
+    if (dist) {
+        fs.mkdirSync(dist, { recursive: true });
+        const gz = path.join(dist, 'seq.sqlite.gz');
+        await pipeline(fs.createReadStream(out), zlib.createGzip({ level: 6 }), fs.createWriteStream(gz));
+        const sha256 = crypto.createHash('sha256').update(fs.readFileSync(gz)).digest('hex');
+        const manifest = {
+            region: 'seq', version, builtAt: builtAt.toISOString(),
+            calendarEnd: new Database(out, { readonly: true }).prepare('SELECT max(end_date) e FROM calendar').get().e,
+            file: 'seq.sqlite.gz', bytes: fs.statSync(gz).size, sha256
+        };
+        fs.writeFileSync(path.join(dist, 'manifest.json'), JSON.stringify(manifest, null, 2));
+        console.log(`📦 ${gz}: ${(manifest.bytes / 1048576).toFixed(0)} MB, manifest written`);
+    }
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
