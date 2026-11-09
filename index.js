@@ -44,29 +44,64 @@ const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 // --- Shared GTFS-RT feed cache ----------------------------------------------
 // Every live endpoint reads Translink's feeds through these caches instead of fetching
 // per request (TripUpdates is ~1.2 MB). Per server instance:
-//  - refresh at most once per TTL; concurrent requests share one in-flight download
-//  - an index by trip_id is built once per refresh, not re-scanned by every endpoint
+//  - while the API is in use (a request in the last KEEP_WARM_MS), each feed is refreshed in
+//    the background every TTL, so requests answer from a fresh copy and never wait on
+//    Translink; idle (overnight), refreshing stops and the next request fetches as before
+//  - each refresh asks "has it changed?" (If-Modified-Since / If-None-Match): when it hasn't,
+//    Translink answers 304 with no body, and the copy we have is kept as current
+//  - concurrent requests share one in-flight download; an index by trip_id is built once per
+//    refresh, not re-scanned by every endpoint
 //  - if a refresh fails, serve the last good copy for up to STALE_MAX_MS
 const STALE_MAX_MS = 120_000;
+const KEEP_WARM_MS = 10 * 60_000;
+// While warm, a copy this much older than its TTL is still served without waiting (a refresh
+// is on its way)
+const WARM_SLACK_MS = 15_000;
+const feedStats = {};
 
 function createFeedCache(name, url, ttlMs, buildIndex) {
     let current = null;     // { feed, index, fetchedAt }
     let inFlight = null;
+    let validators = {};    // Last-Modified / ETag of the copy we hold
+    let lastAskedAt = 0;
+    let timer = null;
+    const stats = feedStats[name] = { downloads: 0, unchanged: 0, failures: 0, warm: false };
     const refresh = async () => {
-        const r = await fetch(url, fetchOptions);
+        const headers = { ...fetchOptions.headers };
+        if (current && validators.lastModified) headers['If-Modified-Since'] = validators.lastModified;
+        if (current && validators.etag) headers['If-None-Match'] = validators.etag;
+        const r = await fetch(url, { ...fetchOptions, headers });
+        if (r.status === 304 && current) {
+            stats.unchanged++;
+            current.fetchedAt = Date.now();
+            return current;
+        }
         if (!r.ok) throw new Error(`${name} feed HTTP ${r.status}`);
         const feed = gtfsRealtime.decode(Buffer.from(await r.arrayBuffer()));
+        validators = { lastModified: r.headers.get('last-modified'), etag: r.headers.get('etag') };
         current = { feed, index: buildIndex(feed), fetchedAt: Date.now() };
+        stats.downloads++;
         return current;
     };
+    const refreshOnce = () => (inFlight ??= refresh().finally(() => { inFlight = null; }));
+    // The background loop: runs while requests keep coming, stops by itself when they don't
+    const tick = async () => {
+        if (Date.now() - lastAskedAt > KEEP_WARM_MS) { timer = null; stats.warm = false; return; }
+        try { await refreshOnce(); } catch (err) { stats.failures++; console.warn(`${name} background refresh failed:`, err.message); }
+        timer = setTimeout(tick, ttlMs);
+        timer.unref();
+    };
     return async function get() {
-        if (current && Date.now() - current.fetchedAt < ttlMs) return current;
-        if (!inFlight) inFlight = refresh().finally(() => { inFlight = null; });
+        lastAskedAt = Date.now();
+        if (!timer) { stats.warm = true; timer = setTimeout(tick, ttlMs); timer.unref(); }
+        const age = current ? Date.now() - current.fetchedAt : Infinity;
+        if (age < ttlMs + WARM_SLACK_MS) return current;
         try {
-            return await inFlight;
+            return await refreshOnce();
         } catch (err) {
-            if (current && Date.now() - current.fetchedAt < STALE_MAX_MS) {
-                console.warn(`${name} refresh failed, serving ${Math.round((Date.now() - current.fetchedAt) / 1000)}s old copy:`, err.message);
+            stats.failures++;
+            if (current && age < STALE_MAX_MS) {
+                console.warn(`${name} refresh failed, serving ${Math.round(age / 1000)}s old copy:`, err.message);
                 return current;
             }
             throw err;
@@ -1803,7 +1838,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The SQLite timetable (being introduced; nothing depends on it yet, so it doesn't affect `ok`)
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        timetableFile: timetableFile.status(), slowRequests });
+        timetableFile: timetableFile.status(), liveFeeds: feedStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
