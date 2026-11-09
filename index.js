@@ -87,7 +87,7 @@ const {
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
-const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, tidy } = require('./lib/places');
+const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, fromOverture, tidy, mergePlaces } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
 /** SQL list of the service_ids running on the date in parameter `dateParam` ('$2') */
@@ -1629,9 +1629,9 @@ app.get('/api/eta', async (req, res) => {
 });
 
 // --- PLACES: address and place search for the planner and saved places -----------------
-// GET /api/places?q=&lat=&lon= -> [{ placeId, displayName, lat, lon }] (up to 6, SEQ only).
-// With PHOTON_URL set (our own Photon on the Oracle box, see scripts/setup-photon.sh) every
-// query goes there. Until then: public Photon, and Nominatim for "45 Station Rd" style house
+// GET /api/places?q=&lat=&lon= -> [{ placeId, displayName, lat, lon, name, address, kind }]
+// (up to 6, SEQ only). With PHOTON_URL set (our own Photon on the Oracle box, see
+// scripts/setup-photon.sh) every query goes there, and to Overture's businesses alongside. Until then: public Photon, and Nominatim for "45 Station Rd" style house
 // numbers, as the app did directly; both public services limit heavy and commercial use.
 // Cached 10 min per query and ~1 km of location, so typing doesn't repeat upstream calls.
 const PHOTON_URL = process.env.PHOTON_URL || null;          // e.g. http://152.67.98.226/photon
@@ -1655,6 +1655,20 @@ async function nominatimSearch(q) {
     return tidy((await r.json()).map(fromNominatim));
 }
 
+// Businesses and named places from Overture Maps (table `places`, scripts/import-places.py, monthly):
+// names whose words are like the query's (pg_trgm), strong matches first, nearer ones ahead.
+// Up to 60 km counts against a place; beyond that only the match does.
+const OVERTURE_SQL = `
+    SELECT id, name, category, address, locality, lat, lon FROM places
+    WHERE $1 <% name
+    ORDER BY word_similarity($1, name) - 0.004 * least(60, 111 * sqrt(power(lat - $2, 2) + power((lon - $3) * 0.89, 2))) DESC
+    LIMIT 12`;
+
+async function overtureSearch(q, lat, lon) {
+    const { rows } = await pool.query(OVERTURE_SQL, [q, lat, lon]);
+    return rows.map(fromOverture);
+}
+
 app.get('/api/places', async (req, res) => {
     const q = String(req.query.q || '').trim();
     if (q.length < 3) return res.json([]);
@@ -1666,14 +1680,18 @@ app.get('/api/places', async (req, res) => {
     if (hit && Date.now() - hit.at < PLACES_CACHE_MS) return res.json(hit.results);
     try {
         let results;
+        const overture = overtureSearch(q, lat, lon).catch(e => { console.error('overture places failed:', e.message); return []; });
         if (PHOTON_URL) {
-            results = await photonSearch(PHOTON_URL, q, lat, lon, PHOTON_KEY ? { 'X-WayGo-Key': PHOTON_KEY } : {});
+            const photon = photonSearch(PHOTON_URL, q, lat, lon, PHOTON_KEY ? { 'X-WayGo-Key': PHOTON_KEY } : {})
+                .catch(e => { console.error('photon failed:', e.message); return []; });
+            results = mergePlaces(q, await photon, await overture);
         } else if (HOUSE_NUMBER_PREFIX.test(q)) {
             results = await nominatimSearch(q);
         } else {
             results = await photonSearch('https://photon.komoot.io', q, lat, lon).catch(() => []);
             if (!results.length) results = await nominatimSearch(q);
         }
+        if (!PHOTON_URL) results = mergePlaces(q, results, await overture);
         if (placesCache.size > 5000) placesCache.clear();
         placesCache.set(key, { at: Date.now(), results });
         res.json(results);
