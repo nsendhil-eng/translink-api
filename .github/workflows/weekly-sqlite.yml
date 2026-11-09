@@ -2,6 +2,7 @@
   # it, and publishes it as a GitHub release. The API downloads the newest release by itself
   # (lib/timetable-file.js, TIMETABLE_URL) and swaps it in without a restart. A failed build
   # publishes nothing, so the API keeps last week's file, and GitHub emails the repo owner.
+  # Also runs when the build script changes on main, so a new file format publishes by itself.
   # Needs no secrets: it reads Translink's public feed and writes only to this repo's releases.
   name: Weekly SQLite timetable
 
@@ -9,6 +10,9 @@
     schedule:
       - cron: '37 16 * * 6'   # Saturday 16:37 UTC = Sunday 02:37 in Brisbane, after the Postgres import
     workflow_dispatch:
+    push:
+      branches: [main]
+      paths: ['scripts/build-sqlite.js']
 
   permissions:
     contents: write
@@ -18,8 +22,8 @@
       runs-on: ubuntu-latest
       timeout-minutes: 20
       steps:
-        - uses: actions/checkout@v4
-        - uses: actions/setup-node@v4
+        - uses: actions/checkout@v5
+        - uses: actions/setup-node@v5
           with:
             node-version: 22
             cache: npm
@@ -39,3 +43,4 @@
           run: |
             gh release list --limit 100 --json tagName --jq '.[].tagName' | grep '^timetable-' | sort -r | tail -n +7 |
               while read tag; do gh release delete "$tag" --yes --cleanup-tag; done
+
