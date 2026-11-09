@@ -1906,14 +1906,22 @@ async function healthChecks() {
     ]);
 }
 
+// What's running, so a missed deploy is obvious: the platform's commit if it passes one
+// (on DigitalOcean, COMMIT_HASH set to ${_self.COMMIT_HASH}), else the local checkout's
+const deploy = { startedAt: new Date().toISOString(), commit: null };
+try {
+    deploy.commit = (process.env.COMMIT_HASH || process.env.SOURCE_VERSION ||
+        require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()).slice(0, 7);
+} catch (e) { /* no git in the container: stays null */ }
+
 app.get('/api/health', async (req, res) => {
     if (!healthCache || Date.now() - healthCache.at > HEALTH_CACHE_MS) {
         healthCache = { at: Date.now(), checks: await healthChecks() };
     }
     const ok = healthCache.checks.every(c => c.ok);
-    // The SQLite timetable (being introduced; nothing depends on it yet, so it doesn't affect `ok`)
+    // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
+        deploy, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
