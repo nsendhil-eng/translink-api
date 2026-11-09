@@ -1,7 +1,8 @@
-# Monthly refresh of businesses and named places (Overture Maps) for /api/places.
-  # Overture publishes about once a month; this takes the latest release, checks it, and swaps it
-  # in for the `places` table. A failed run leaves the live table as it was, and GitHub emails the
-  # repo owner. Uses the same POSTGRES_URL_NON_POOLING secret as the weekly timetable import.
+  # Monthly refresh of businesses and named places (Overture Maps) for /api/places.
+  # Overture publishes about once a month; this takes the latest release, checks it, swaps it in
+  # for the `places` table and publishes it as a file for the API (release `places-current`; the
+  # API fetches it by itself, see lib/places-file.js). A failed run leaves both as they were, and
+  # GitHub emails the repo owner. Uses the same POSTGRES_URL_NON_POOLING secret as the timetable import.
   name: Monthly places import
 
   on:
@@ -13,18 +14,34 @@
           description: 'Load and check only, leave the live places alone'
           type: boolean
           default: false
+    push:
+      branches: [main]
+      paths: ['scripts/import-places.py']
+
+  permissions:
+    contents: write
 
   jobs:
     import:
       runs-on: ubuntu-latest
       timeout-minutes: 30
       steps:
-        - uses: actions/checkout@v4
-        - uses: actions/setup-python@v5
+        - uses: actions/checkout@v5
+        - uses: actions/setup-python@v6
           with:
             python-version: '3.12'
         - run: pip install duckdb==1.5.6
         - name: Import places
           env:
             POSTGRES_URL_NON_POOLING: ${{ secrets.POSTGRES_URL_NON_POOLING }}
-          run: python3 scripts/import-places.py ${{ inputs.dry_run && '--dry-run' || '' }}
+          run: python3 scripts/import-places.py --sqlite data/places.sqlite --dist dist ${{ inputs.dry_run && '--dry-run' || '' }}
+        - name: Publish
+          if: ${{ !inputs.dry_run }}
+          env:
+            GH_TOKEN: ${{ github.token }}
+          run: |
+            gh release view places-current > /dev/null 2>&1 ||
+              gh release create places-current --title "Places" --notes "SEQ places for the API, from Overture Maps." --latest=false
+            # The file first: the API only acts on a new manifest
+            gh release upload places-current dist/places.sqlite.gz --clobber
+            gh release upload places-current dist/manifest.json --clobber
