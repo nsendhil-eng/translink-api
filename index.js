@@ -18,6 +18,12 @@ const SLOW_REQUEST_MS = 700;
 const slowRequests = [];
 app.use('/api', (req, res, next) => {
     const t0 = Date.now();
+    // How long the server spent, for anyone timing requests (curl -I, browser dev tools)
+    const writeHead = res.writeHead;
+    res.writeHead = function (...args) {
+        if (!res.headersSent) res.setHeader('Server-Timing', `app;dur=${Date.now() - t0}`);
+        return writeHead.apply(this, args);
+    };
     res.on('finish', () => {
         const ms = Date.now() - t0;
         if (ms < SLOW_REQUEST_MS) return;
