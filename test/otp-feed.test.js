@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { cleanTripUpdates } = require('../lib/otp-feed');
+const { cleanTripUpdates, doubtedTrips } = require('../lib/otp-feed');
 
 const NOW = 2_000_000_000;
 const STOPS = [
@@ -42,6 +42,13 @@ test('the 444 case: leaving the first stop now, with the bus 15 km away, is drop
 
 test('a bus far away with time to get there stays: starting late is real', () => {
     assert.strictEqual(clean(update({ time: NOW + 1800 }), vehicle(-27.486, 152.992)).stats.dropped, 0);
+});
+
+test('doubtedTrips names only the impossible ones', () => {
+    const ctx = (v) => ({ stopsOfTrip: () => STOPS, vehicleOfTrip: () => v, nowS: NOW });
+    assert.deepStrictEqual([...doubtedTrips([update()], ctx(vehicle(-27.486, 152.992)))], ['T']);
+    assert.strictEqual(doubtedTrips([update({ time: NOW + 1800 })], ctx(vehicle(-27.486, 152.992))).size, 0);
+    assert.strictEqual(doubtedTrips([update()], ctx(undefined)).size, 0);
 });
 
 test('a small delay is never doubted', () => {

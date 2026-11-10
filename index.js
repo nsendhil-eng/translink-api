@@ -130,6 +130,31 @@ const getTripUpdates = createFeedCache('TripUpdates', REALTIME_URL, 10_000, (fee
     return byTrip;
 });
 
+// The live feed as the app's own screens should see it: a trip whose prediction can't be right
+// (lib/otp-feed.js: the vehicle couldn't reach the stop in time) reads as having no live data,
+// so it shows the timetable instead of a false "35 min late".
+const DOUBT_CACHE_MS = 20_000;
+let doubtCache = null;   // { at, source, doubted }
+async function trustedTripUpdates() {
+    const updates = await getTripUpdates();
+    const tt = fullTimetable();
+    if (!tt) return updates;
+    if (!doubtCache || doubtCache.source !== updates.feed || Date.now() - doubtCache.at > DOUBT_CACHE_MS) {
+        const vehicles = await getVehiclePositions().catch(() => null);
+        doubtCache = {
+            at: Date.now(), source: updates.feed,
+            doubted: doubtedTrips(updates.feed.entity, {
+                stopsOfTrip: (id) => tt.tripStopTimes(id),
+                vehicleOfTrip: (id) => vehicles?.index.get(id),
+                nowS: Date.now() / 1000
+            })
+        };
+    }
+    const { doubted } = doubtCache;
+    if (!doubted.size) return updates;
+    return { ...updates, index: { get: (id) => (doubted.has(id) ? undefined : updates.index.get(id)) } };
+}
+
 // trip_id -> VehiclePosition; with duplicate vehicles on a trip, see preferVehicle
 const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITIONS_URL, 4_000, (feed) => {
     const nowS = Date.now() / 1000;
@@ -150,7 +175,7 @@ const {
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
 const { bestItinerary, etaSummary, etaCacheKey } = require('./lib/eta');
-const { cleanTripUpdates } = require('./lib/otp-feed');
+const { cleanTripUpdates, doubtedTrips } = require('./lib/otp-feed');
 const timetableFile = require('./lib/timetable-file');
 const placesFile = require('./lib/places-file');
 // The SQLite timetable when it's loaded, else null and the Postgres path runs.
@@ -1001,7 +1026,7 @@ app.get('/api/departures', async (req, res) => {
         }
 
         // trip_id -> stopTimeUpdates / vehicle, from the shared GTFS-RT caches
-        const [tuCache, vpCache] = await Promise.all([getTripUpdates(), getVehiclePositions().catch(() => null)]);
+        const [tuCache, vpCache] = await Promise.all([trustedTripUpdates(), getVehiclePositions().catch(() => null)]);
         const tripUpdates = tuCache.index;
         const vehicles = vpCache?.index ?? new Map();
         const synchronizedNow = new Date();
@@ -1306,7 +1331,7 @@ app.get('/api/trip-stops', async (req, res) => {
 
             // Pick the next trip by its LIVE time at the stop: a bus running 5 min late is
             // still coming after its scheduled time has passed
-            const updates = (await getTripUpdates()).index;
+            const updates = (await trustedTripUpdates()).index;
             const liveSecondsUntil = (tr) => {
                 const live = liveStopTime(updates.get(tr.trip_id)?.stopTimeUpdate, tr.stop_sequence, scheduledUtc(tr.day, tr.departure_time));
                 return Math.round((live.estimatedUtc - syncNow) / 1000);
@@ -1347,7 +1372,7 @@ app.get('/api/trip-stops', async (req, res) => {
                 FROM stop_times st JOIN stops s ON st.stop_id = s.stop_id
                 WHERE st.trip_id = $1 ORDER BY st.stop_sequence
             `, [trip_id]),
-            getTripUpdates(),
+            trustedTripUpdates(),
             // Vehicle position isn't critical — a feed failure just means no live vehicle
             getVehiclePositions().catch(() => null)
         ]);
@@ -1520,7 +1545,7 @@ app.get('/api/next-trips', async (req, res) => {
                   AND st.departure_time >= $2
                   AND t.service_id IN ${services}
             `, [stop_id, route_id, direction_id], syncNow, (tt, d) => tt.upcoming([stop_id], d, { routeId: route_id, directionId: direction_id })),
-            getTripUpdates(),
+            trustedTripUpdates(),
             getVehiclePositions().catch(() => null)
         ]);
         // Timetable order across both service days
@@ -1532,7 +1557,6 @@ app.get('/api/next-trips', async (req, res) => {
 
         const trips = [];
         for (const row of stopRows) {
-            if (trips.length >= 5) break;
             const scheduled = row.scheduled;
             const stopUpdates = liveDataMap.get(row.trip_id);
             const tripCancelled = isTripCancelled(tripUpdates.index.get(row.trip_id));
@@ -1558,7 +1582,9 @@ app.get('/api/next-trips', async (req, res) => {
             });
         }
 
-        res.json({ trips });
+        // Soonest to actually arrive first: a very late bus comes after the one that will beat it
+        trips.sort((a, b) => a.departureUtc.localeCompare(b.departureUtc));
+        res.json({ trips: trips.slice(0, 5) });
     } catch (error) {
         console.error('next-trips failed:', error);
         res.status(500).json({ error: 'Failed to fetch next trips.' });
@@ -1611,7 +1637,7 @@ app.get('/api/plan-delays', async (req, res) => {
     );
 
     try {
-        const byTrip = (await getTripUpdates()).index;
+        const byTrip = (await trustedTripUpdates()).index;
 
         const delays = {};
         for (const tripId of requested) {
@@ -1954,7 +1980,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        deploy, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
+        deploy, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
