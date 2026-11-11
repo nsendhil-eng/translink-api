@@ -1277,6 +1277,9 @@ app.get('/api/stop-live', async (req, res) => {
 // Returns full stop list with scheduled/estimated times + simplified shape
 app.get('/api/trip-stops', async (req, res) => {
     let { trip_id, route_id, direction_id, user_lat, user_lon } = req.query;
+    // Optional, for a trip being ridden: just the vehicle and these stops' live times, no shape
+    // (a few hundred bytes instead of the whole trip on every poll)
+    const liteSeqs = req.query.seqs ? new Set(String(req.query.seqs).split(',').map(Number).filter(Number.isFinite)) : null;
     const userLat = parseFloat(user_lat);
     const userLon = parseFloat(user_lon);
     const hasLocation = !isNaN(userLat) && !isNaN(userLon);
@@ -1406,7 +1409,9 @@ app.get('/api/trip-stops', async (req, res) => {
 
         // Get shape
         let shape = [];
-        if (tripInfo.shape_id && tt) {
+        if (liteSeqs) {
+            // No shape: the vehicle's heading isn't needed for this
+        } else if (tripInfo.shape_id && tt) {
             shape = tt.simplifiedShape(tripInfo.shape_id, 0.00008);
         } else if (tripInfo.shape_id) {
             const { rows: shapeRows } = await pool.query(`
@@ -1500,6 +1505,14 @@ app.get('/api/trip-stops', async (req, res) => {
             if (firstUpcoming >= 0) stops[firstUpcoming].isNearest = true;
         }
 
+        if (liteSeqs) {
+            return res.json({
+                isCancelled: isTripCancelled(tripUpdates.index.get(trip_id)),
+                vehicle,
+                stops: stops.filter(s => liteSeqs.has(s.stopSequence))
+                    .map(s => ({ stopSequence: s.stopSequence, estimatedUtc: s.estimatedUtc, isRealtime: s.isRealtime, isSkipped: s.isSkipped }))
+            });
+        }
         res.json({
             tripInfo: {
                 tripId: tripInfo.trip_id,
