@@ -2148,6 +2148,43 @@ app.get('/api/plan', async (req, res) => {
     }
 });
 
+// --- WALKING ROUTE ---------------------------------------------------------------------------
+// GET /api/walk?fromLat&fromLon&toLat&toLon -> the walk along real streets and paths, from the
+// planner's own street network (OTP, OpenStreetMap): what the home map draws to a tapped stop,
+// with real minutes and turns. About 0.1 s; not cached (cheaper to ask again than to keep).
+const WALK_TIMEOUT_MS = 3_000;
+app.get('/api/walk', async (req, res) => {
+    const [fromLat, fromLon, toLat, toLon] = ['fromLat', 'fromLon', 'toLat', 'toLon'].map(k => parseFloat(req.query[k]));
+    if ([fromLat, fromLon, toLat, toLon].some(Number.isNaN)) return res.status(400).json({ error: 'fromLat, fromLon, toLat, toLon are required.' });
+    const straightM = haversineMeters(fromLat, fromLon, toLat, toLon);
+    if (straightM > 5_000) return res.status(400).json({ error: 'Too far to walk.' });
+    try {
+        const url = `${OTP_URL}/otp/routers/default/plan?fromPlace=${fromLat},${fromLon}&toPlace=${toLat},${toLon}` +
+            `&mode=WALK&numItineraries=1`;
+        const otpRes = await fetch(url, { headers: { 'User-Agent': 'WayGo/1.0' }, signal: AbortSignal.timeout(WALK_TIMEOUT_MS) });
+        if (!otpRes.ok) return res.status(502).json({ error: 'Planner request failed.' });
+        const leg = (await otpRes.json()).plan?.itineraries?.[0]?.legs?.[0];
+        if (!leg?.legGeometry?.points) return res.status(404).json({ error: 'No walking route found.' });
+        // A walk far longer than the straight line usually means a point snapped to the wrong side
+        // of a river or rail line: say so, and the app keeps its own estimate
+        const plausible = leg.distance <= Math.max(straightM * 3, straightM + 800);
+        res.json({
+            distanceM: Math.round(leg.distance),
+            durationS: Math.round(leg.duration),
+            straightM: Math.round(straightM),
+            plausible,
+            geometry: leg.legGeometry.points,
+            steps: (leg.steps || []).map(s => ({
+                distance: Math.round(s.distance), streetName: s.streetName,
+                relativeDirection: s.relativeDirection, absoluteDirection: s.absoluteDirection
+            }))
+        });
+    } catch (error) {
+        console.error('walk failed:', error.message);
+        res.status(502).json({ error: 'Planner unavailable.' });
+    }
+});
+
 // The website: on Vercel this was a separate static build, here the API serves it too
 app.use(express.static(path.join(__dirname, 'public')));
 
