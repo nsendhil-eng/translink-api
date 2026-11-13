@@ -614,6 +614,84 @@ app.get('/api/vehicles-near-me', async (req, res) => {
     }
 });
 
+// --- WHICH VEHICLE AM I ON? (see lib/which-vehicle.js) -------------------------------------
+// GET /api/which-vehicle?fixes=lat,lon,epochS;...&stop=001951&planned=<tripId>
+// The phone's last few fixes in; the live vehicles it could be riding, ranked, out. Fast: the
+// vehicles are bucketed by where they can have got to once per feed refresh, and a request reads
+// one bucket. The fixes are never logged.
+const whichVehicle = require('./lib/which-vehicle');
+let vehicleGrid = null;            // { index, builtAt, grid }
+const VEHICLE_GRID_MS = 8_000;
+const shapeCache = new Map();      // shape_id -> points, least recently used first
+const SHAPE_CACHE_MAX = 300;
+function cachedShape(tt, shapeId) {
+    if (!shapeId) return [];
+    let pts = shapeCache.get(shapeId);
+    if (pts) { shapeCache.delete(shapeId); shapeCache.set(shapeId, pts); return pts; }
+    pts = tt.shape(shapeId);
+    shapeCache.set(shapeId, pts);
+    if (shapeCache.size > SHAPE_CACHE_MAX) shapeCache.delete(shapeCache.keys().next().value);
+    return pts;
+}
+const whichVehicleStats = { requests: 0, slowest: 0 };
+
+app.get('/api/which-vehicle', async (req, res) => {
+    const t0 = process.hrtime.bigint();
+    const fixes = whichVehicle.parseFixes(req.query.fixes);
+    if (fixes.length < 2) return res.status(400).json({ error: 'fixes: at least two of lat,lon,epochSeconds separated by ;' });
+    const tt = fullTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    try {
+        const vehicles = await getVehiclePositions();
+        const now = Date.now();
+        if (!vehicleGrid || vehicleGrid.index !== vehicles.index || now - vehicleGrid.builtAt > VEHICLE_GRID_MS) {
+            vehicleGrid = { index: vehicles.index, builtAt: now, grid: whichVehicle.buildGrid(vehicles.index, now / 1000) };
+        }
+        const last = fixes[fixes.length - 1];
+        const entries = whichVehicle.cellOf(vehicleGrid.grid, last.lat, last.lon);
+
+        // The stop you were waiting at, by id or code ("1951" or "001951")
+        const stopIds = new Set();
+        const stop = req.query.stop ? String(req.query.stop) : null;
+        if (stop) {
+            if (tt.stopById.has(stop)) stopIds.add(stop);
+            for (const s of tt.stopsByCode.get(stop) || []) stopIds.add(s.stop_id);
+        }
+        const stopTimes = new Map();
+        const timesOf = (id) => stopTimes.get(id) ?? stopTimes.set(id, tt.tripStopTimes(id)).get(id);
+        const stopSeqOf = (id) => (stopIds.size ? timesOf(id).find(s => stopIds.has(s.stop_id))?.stop_sequence ?? null : null);
+
+        const ranked = whichVehicle.rankVehicles(fixes, entries, {
+            shapeOf: (id) => cachedShape(tt, tt.trip(id)?.shape_id),
+            stopSeqOf
+        });
+        const planned = req.query.planned ? String(req.query.planned).replace(/^\d+:/, '') : null;
+        const candidates = ranked.candidates.map(c => {
+            const trip = tt.trip(c.tripId);
+            const next = timesOf(c.tripId).find(s => s.stop_sequence === c.v.currentStopSequence);
+            return {
+                tripId: c.tripId,
+                routeShortName: trip?.route?.route_short_name ?? '',
+                headsign: trip?.trip_headsign ?? '',
+                routeColor: trip?.route?.route_color ?? null,
+                routeType: trip?.route?.route_type ?? 3,
+                directionId: trip?.direction_id ?? null,
+                fit: c.fit, share: c.share, distanceM: c.distanceM, ageS: c.ageS,
+                calledAtStop: c.calledAtStop, planned: c.tripId === planned,
+                nextStop: next ? { name: next.stop_name, seq: next.stop_sequence } : null
+            };
+        });
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        whichVehicleStats.requests++;
+        whichVehicleStats.slowest = Math.max(whichVehicleStats.slowest, Math.round(ms));
+        res.set('Server-Timing', `which;dur=${ms.toFixed(1)}`);
+        res.json({ moving: ranked.moving, speedMps: ranked.speedMps, candidates });
+    } catch (error) {
+        console.error('which-vehicle failed:', error.message);
+        res.status(500).json({ error: 'Failed to rank vehicles.' });
+    }
+});
+
 app.get('/api/shapes-near-me', async (req, res) => {
     const lat = parseFloat(req.query.lat);
     const lon = parseFloat(req.query.lon);
@@ -1993,7 +2071,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        deploy, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, slowRequests });
+        deploy, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, slowRequests });
 });
 
 app.get('/api/plan', async (req, res) => {
@@ -2041,6 +2119,9 @@ app.get('/api/plan', async (req, res) => {
                 routeColor:     leg.routeColor     || null,
                 headsign:       leg.headsign       || null,
                 tripId:         leg.tripId         || null,
+                // Whether the times include the live feed, and by how much it moved them (seconds)
+                realTime:       leg.realTime === true,
+                departureDelay: leg.departureDelay ?? 0,
                 legGeometry:    leg.legGeometry?.points || null,
                 steps: (leg.steps || []).map(s => ({
                     distance: Math.round(s.distance),
