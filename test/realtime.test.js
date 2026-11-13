@@ -152,3 +152,16 @@ test('recorded: a fresh fix beats one from over an hour ago', () => {
     assert.equal(rt.isFreshFix(chosen.timestamp, NOW), true);
     assert.equal(pick([...pair].reverse()), chosen);
 });
+
+test('a departure still to come is shown at most a minute early', () => {
+    const { liveStopTime } = require('../lib/realtime');
+    const scheduled = new Date(Date.now() + 30 * 60_000);
+    const early = liveStopTime([{ stopSequence: 14, departure: { delay: -696 } }], 14, scheduled);
+    assert.strictEqual(early.delaySeconds, -60);
+    assert.strictEqual(early.isRealtime, true);
+    const late = liveStopTime([{ stopSequence: 14, departure: { delay: 300 } }], 14, scheduled);
+    assert.strictEqual(late.delaySeconds, 300);
+    // Already past: left as reported
+    const past = liveStopTime([{ stopSequence: 14, departure: { delay: -600 } }], 14, new Date(Date.now() - 60_000));
+    assert.strictEqual(past.delaySeconds, -600);
+});
