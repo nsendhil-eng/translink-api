@@ -60,3 +60,13 @@ test('a vehicle at its stop stays, and a stale fix proves nothing', () => {
     const old = { ...vehicle(-27.486, 152.992), timestamp: NOW - 3600 };
     assert.strictEqual(clean(update(), old).stats.dropped, 0);
 });
+
+test('a trip not started yet predicted well early is doubted; a running one is not', () => {
+    const ctx = (v) => ({ stopsOfTrip: () => STOPS, vehicleOfTrip: () => v, nowS: NOW });
+    // The 2026-11-13 F1: "11 min early" with the ferry still on its previous run
+    assert.deepStrictEqual([...doubtedTrips([update({ delay: -644, time: NOW + 600 })], ctx(undefined))], ['T']);
+    // A little early is believable
+    assert.strictEqual(doubtedTrips([update({ delay: -60, time: NOW + 600 })], ctx(undefined)).size, 0);
+    // Under way, early can be real
+    assert.strictEqual(doubtedTrips([update({ delay: -300, time: NOW + 600 })], ctx(vehicle(-27.55, 152.85))).size, 0);
+});
