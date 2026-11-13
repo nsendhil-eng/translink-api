@@ -67,8 +67,9 @@ test('a stale fix is skipped', () => {
     assert.strictEqual(entriesOf({ old: vehicle(0, 400) }).length, 0);
 });
 
-test('a bus the feed says is stopped is not projected far up the road', () => {
-    assert.strictEqual(reachAheadM({ currentStatus: 1, position: {} }, 90), 150);
+test('a bus last seen stopped gets a dwell allowance, not a cap', () => {
+    assert.strictEqual(reachAheadM({ currentStatus: 1, position: {} }, 10), 150);
+    assert.strictEqual(reachAheadM({ currentStatus: 1, position: {} }, 90), 840);
     assert.strictEqual(reachAheadM({ currentStatus: 2, position: {} }, 90), 1080);
     // Stopped at the stop you're boarding at, fix 90 s old: still fits a rider just pulling away
     const pulling = [0, 5, 10, 15, 20].map(s => { const [lat, lon] = east(-60 + s * 5); return { lat, lon, t: NOW - 20 + s }; });
