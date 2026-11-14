@@ -1013,7 +1013,7 @@ app.get('/api/stops-near-me', async (req, res) => {
     query += ` ORDER BY ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) LIMIT 25;`;
     const { rows } = await pool.query(query, queryParams);
 
-    // Additive, opt-in: trains and ferries (or `far_types`) within `far_radius` too. A station
+    // Additive, opt-in: trains and ferries (or `far_types`), and busway/bus stations, within `far_radius` too. A station
     // ten minutes' walk away can beat the buses at the door, but sits outside the bus radius.
     const farRadius = Math.min(parseInt(req.query.far_radius, 10) || 0, 3000);
     if (farRadius > radiusInMeters) {
@@ -1025,7 +1025,8 @@ app.get('/api/stops-near-me', async (req, res) => {
         FROM stops AS s
         LEFT JOIN stops AS parent_stop ON s.parent_station = parent_stop.stop_id
         WHERE ST_DWithin(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
-          AND s.location_type = 0 AND s.route_types && $4
+          AND s.location_type = 0
+          AND (s.route_types && $4 OR (COALESCE(s.parent_station, '') <> '' AND 3 = ANY(s.route_types)))
         ORDER BY ST_Distance(s.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) LIMIT 15
       `, [lon, lat, farRadius, farTypes]);
       const have = new Set(rows.map(r => r.id));
