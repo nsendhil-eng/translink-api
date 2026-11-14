@@ -692,6 +692,32 @@ app.get('/api/which-vehicle', async (req, res) => {
     }
 });
 
+// --- STOPS IN VIEW: the map's dots -------------------------------------------------------------
+// GET /api/stops-in-view?minLat&minLon&maxLat&maxLon -> every boarding stop in the box, lean (no
+// routes or directions: a tap fetches its departures). Fetched after the home screen is up, so
+// it never slows the first load. Too wide a box answers [] rather than thousands of dots.
+const STOPS_IN_VIEW_MAX = 600;
+const STOPS_IN_VIEW_SPAN_M = 8_000;
+app.get('/api/stops-in-view', (req, res) => {
+    const [minLat, minLon, maxLat, maxLon] = ['minLat', 'minLon', 'maxLat', 'maxLon'].map(k => parseFloat(req.query[k]));
+    if ([minLat, minLon, maxLat, maxLon].some(Number.isNaN) || minLat > maxLat || minLon > maxLon)
+        return res.status(400).json({ error: 'minLat, minLon, maxLat, maxLon are required.' });
+    const tt = fileTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    const diagonal = haversineMeters(minLat, minLon, maxLat, maxLon);
+    if (diagonal > STOPS_IN_VIEW_SPAN_M) return res.json([]);
+    const lat = (minLat + maxLat) / 2, lon = (minLon + maxLon) / 2;
+    const inBox = (s) => s.location_type === 0 && s.stop_code && s.lat >= minLat && s.lat <= maxLat && s.lon >= minLon && s.lon <= maxLon;
+    const rows = tt.within(lat, lon, diagonal / 2 + 50, inBox).slice(0, STOPS_IN_VIEW_MAX).map(({ stop: st }) => ({
+        id: st.stop_id, name: st.stop_name, stop_code: st.stop_code, latitude: st.lat, longitude: st.lon,
+        parent_station: st.parent_station || null,
+        parent_station_name: st.parent_station ? tt.stopById.get(st.parent_station)?.stop_name ?? null : null,
+        route_types: st.route_types
+    }));
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.json(rows);
+});
+
 app.get('/api/shapes-near-me', async (req, res) => {
     const lat = parseFloat(req.query.lat);
     const lon = parseFloat(req.query.lon);
