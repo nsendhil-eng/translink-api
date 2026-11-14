@@ -692,6 +692,37 @@ app.get('/api/which-vehicle', async (req, res) => {
     }
 });
 
+// --- STOPS FILE: every boarding stop, for the app to keep on the phone ---------------------------
+// GET /api/stops-file -> { version, parents: {id: name}, stops: [[id, name, code, lat, lon, parent,
+// routeTypes, servicingRoutes], ...] }. The app answers "stops near me" and the map's dots from it
+// on the phone (instant, offline), and asks again only when the timetable's version changes:
+// ETag = that version, so an unchanged file is a 304. Built and gzipped once per version.
+const zlib = require('zlib');
+let stopsFileCache = null;   // { version, etag, gz }
+function stopsFile(tt) {
+    const version = String(timetableFile.status().version ?? tt.meta.built_at ?? 'unknown');
+    if (stopsFileCache?.version === version) return stopsFileCache;
+    const parents = {};
+    const stops = [];
+    for (const st of tt.stops) {
+        if (st.location_type !== 0 || !st.stop_code) continue;
+        if (st.parent_station && !(st.parent_station in parents)) parents[st.parent_station] = tt.stopById.get(st.parent_station)?.stop_name ?? null;
+        stops.push([st.stop_id, st.stop_name, st.stop_code, +st.lat.toFixed(6), +st.lon.toFixed(6),
+            st.parent_station || null, st.route_types || [], st.servicing_routes || null]);
+    }
+    const body = JSON.stringify({ version, parents, stops });
+    stopsFileCache = { version, etag: `"stops-${version}"`, gz: zlib.gzipSync(body, { level: 9 }), count: stops.length, bytes: body.length };
+    return stopsFileCache;
+}
+app.get('/api/stops-file', (req, res) => {
+    const tt = fileTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    const f = stopsFile(tt);
+    res.set({ ETag: f.etag, 'Cache-Control': 'public, max-age=21600', 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' });
+    if (req.headers['if-none-match'] === f.etag) return res.status(304).end();
+    res.end(f.gz);
+});
+
 // --- STOPS IN VIEW: the map's dots -------------------------------------------------------------
 // GET /api/stops-in-view?minLat&minLon&maxLat&maxLon -> every boarding stop in the box, lean (no
 // routes or directions: a tap fetches its departures). Fetched after the home screen is up, so
