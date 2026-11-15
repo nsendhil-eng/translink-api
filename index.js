@@ -2243,6 +2243,233 @@ app.get('/api/walk', async (req, res) => {
     }
 });
 
+// --- RE-PLANNING FROM A RIDE (see lib/replan.js) ------------------------------------------------
+// The planner's answer to "I'm on this bus (or about to board it): where do I get off, and how do I
+// finish?" Getting off and walking is worked out here; a change of vehicle is OTP's own plan from
+// that stop. OTP itself is never changed.
+//   GET /api/replan-from-trip?trip_id&toLat&toLon[&from_seq][&prefer=walking]
+//   GET /api/stop-options?stop=<code or id>&toLat&toLon[&prefer][&window=40]
+//       "coming next": each trip leaving that stop soon, with its own arrival at the destination
+const replan = require('./lib/replan');
+const REPLAN_PLAN_TTL_MS = 90_000;
+const replanPlanCache = new Map();      // "stop|minute|dest" -> { at, it }
+
+/** "2026-11-15" and "8:05am" in Brisbane, as OTP wants them */
+function brisbaneDateTime(ms) {
+    const parts = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: 'numeric', minute: '2-digit', hour12: true }).formatToParts(new Date(ms));
+    const p = (t) => parts.find(x => x.type === t)?.value || '';
+    return { date: `${p('year')}-${p('month')}-${p('day')}`, time: `${p('hour')}:${p('minute')}${p('dayPeriod').toLowerCase().replace(/\./g, '')}` };
+}
+
+/** An OTP itinerary in the shape /api/plan returns */
+function mapOtpItinerary(it) {
+    return {
+        duration: it.duration, startTime: it.startTime, endTime: it.endTime,
+        walkDistance: Math.round(it.walkDistance), transfers: it.transfers,
+        legs: it.legs.map(leg => ({
+            mode: leg.mode, startTime: leg.startTime, endTime: leg.endTime,
+            duration: Math.round(leg.duration), distance: Math.round(leg.distance),
+            from: { name: leg.from.name, lat: leg.from.lat, lon: leg.from.lon, stopCode: leg.from.stopCode },
+            to: { name: leg.to.name, lat: leg.to.lat, lon: leg.to.lon, stopCode: leg.to.stopCode },
+            routeShortName: leg.routeShortName || null, routeLongName: leg.routeLongName || null,
+            routeColor: leg.routeColor || null, headsign: leg.headsign || null, tripId: leg.tripId || null,
+            realTime: leg.realTime === true, departureDelay: leg.departureDelay ?? 0,
+            legGeometry: leg.legGeometry?.points || null,
+            steps: (leg.steps || []).map(s => ({ distance: Math.round(s.distance), streetName: s.streetName,
+                relativeDirection: s.relativeDirection, absoluteDirection: s.absoluteDirection }))
+        }))
+    };
+}
+
+/** The planner's soonest arrival from a stop at a time (cached briefly: "coming next" asks the same few) */
+async function planFromStop(stop, atMs, dest) {
+    const key = `${stop.stopId}|${Math.floor(atMs / 60_000)}|${dest.lat.toFixed(3)},${dest.lon.toFixed(3)}`;
+    const hit = replanPlanCache.get(key);
+    if (hit && Date.now() - hit.at < REPLAN_PLAN_TTL_MS) return hit.it;
+    const { date, time } = brisbaneDateTime(atMs);
+    const url = `${OTP_URL}/otp/routers/default/plan?fromPlace=${stop.lat},${stop.lon}&toPlace=${dest.lat},${dest.lon}` +
+        `&time=${encodeURIComponent(time)}&date=${date}&mode=TRANSIT,WALK&numItineraries=3&walkReluctance=5&maxWalkDistance=1500`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'WayGo/1.0' }, signal: AbortSignal.timeout(4_000) });
+    if (!r.ok) throw new Error(`OTP ${r.status}`);
+    const its = ((await r.json()).plan?.itineraries || []).map(mapOtpItinerary);
+    const best = its.sort((a, b) => a.endTime - b.endTime)[0] ?? null;
+    replanPlanCache.set(key, { at: Date.now(), it: best });
+    if (replanPlanCache.size > 2000) replanPlanCache.delete(replanPlanCache.keys().next().value);
+    return best;
+}
+
+/** The real walk from a stop to the destination (the planner's streets), cached for a day: streets don't move */
+const replanWalkCache = new Map();
+async function walkFromStop(stop, dest) {
+    const key = `${stop.stopId}|${dest.lat.toFixed(4)},${dest.lon.toFixed(4)}`;
+    const hit = replanWalkCache.get(key);
+    if (hit && Date.now() - hit.at < 86_400_000) return hit.w;
+    const url = `${OTP_URL}/otp/routers/default/plan?fromPlace=${stop.lat},${stop.lon}&toPlace=${dest.lat},${dest.lon}&mode=WALK&numItineraries=1`;
+    const r = await fetch(url, { headers: { 'User-Agent': 'WayGo/1.0' }, signal: AbortSignal.timeout(WALK_TIMEOUT_MS) });
+    if (!r.ok) throw new Error(`OTP ${r.status}`);
+    const leg = (await r.json()).plan?.itineraries?.[0]?.legs?.[0];
+    const straight = haversineMeters(stop.lat, stop.lon, dest.lat, dest.lon);
+    // A walk far longer than the straight line is a point snapped across a river: keep the estimate
+    const w = leg && leg.distance <= Math.max(straight * 3, straight + 800)
+        ? { s: Math.round(leg.duration), m: Math.round(leg.distance), geometry: leg.legGeometry?.points || null,
+            steps: (leg.steps || []).map(st => ({ distance: Math.round(st.distance), streetName: st.streetName,
+                relativeDirection: st.relativeDirection, absoluteDirection: st.absoluteDirection })) }
+        : null;
+    replanWalkCache.set(key, { at: Date.now(), w });
+    if (replanWalkCache.size > 5000) replanWalkCache.delete(replanWalkCache.keys().next().value);
+    return w;
+}
+
+/** A trip's stops with their live times (as /api/trip-stops: delays carry forward between updates) */
+function liveTripStops(tt, tripId, updates, now) {
+    const rows = tt.tripStopTimes(tripId);
+    if (!rows.length) return [];
+    const days = activeServiceDays(now);
+    const day = [...days].reverse().find(d => tt.tripRunsOn(tripId, d)) ?? serviceDay(now);
+    const byseq = new Map((updates.index.get(tripId)?.stopTimeUpdate || []).map(u => [u.stopSequence, u]));
+    let carried = null;
+    return rows.map(s => {
+        const scheduled = scheduledUtc(day, s.departure_time);
+        let eta = scheduled.getTime(), live = false;
+        const event = stopEvent(byseq.get(s.stop_sequence));
+        if (event?.time != null) { eta = toNum(event.time) * 1000; carried = Math.round((eta - scheduled.getTime()) / 1000); live = true; }
+        else if (event?.delay != null) { carried = toNum(event.delay); eta = scheduled.getTime() + carried * 1000; live = true; }
+        else if (carried != null) { eta = scheduled.getTime() + carried * 1000; live = true; }
+        const stop = tt.stopById.get(s.stop_id);
+        return { stopId: s.stop_id, name: s.stop_name, seq: s.stop_sequence, lat: parseFloat(s.lat), lon: parseFloat(s.lon),
+            etaMs: eta, live, code: stop?.stop_code ?? null,
+            hub: Boolean(stop?.parent_station) || /station|busway|interchange/i.test(s.stop_name) };
+    });
+}
+
+const legMode = (routeType) => ({ 0: 'TRAM', 1: 'RAIL', 2: 'RAIL', 4: 'FERRY' })[routeType] ?? 'BUS';
+
+/** The whole itinerary for one way of finishing: the ride, then the walk or the planner's legs */
+function completionItinerary(tt, tripId, board, best, dest) {
+    const trip = tt.trip(tripId);
+    const r = trip?.route ?? {};
+    const shape = trip?.shape_id ? tt.simplifiedShape(trip.shape_id, 0.00008) : [];
+    const a = best.alight;
+    const ride = {
+        mode: legMode(r.route_type), startTime: board.etaMs, endTime: a.etaMs,
+        duration: Math.round((a.etaMs - board.etaMs) / 1000), distance: 0,
+        from: { name: board.name, lat: board.lat, lon: board.lon, stopCode: board.code },
+        to: { name: a.name, lat: a.lat, lon: a.lon, stopCode: a.code },
+        routeShortName: r.route_short_name || null, routeLongName: r.route_long_name || null,
+        routeColor: r.route_color || null, headsign: trip?.trip_headsign || null, tripId: `1:${tripId}`,
+        realTime: Boolean(a.live), departureDelay: 0,
+        legGeometry: replan.encodePolyline(replan.cutShape(shape, board, a)) || null, steps: []
+    };
+    let rest;
+    if (!best.itinerary) {
+        const est = replan.walkTo(a, dest);
+        const real = best.walk;   // the planner's walk, when it was fetched
+        rest = [{ mode: 'WALK', startTime: a.etaMs, endTime: best.arriveMs, duration: real?.s ?? est.s,
+            distance: real?.m ?? Math.round(est.m * replan.DETOUR),
+            from: ride.to, to: { name: 'Destination', lat: dest.lat, lon: dest.lon, stopCode: null },
+            routeShortName: null, routeLongName: null, routeColor: null, headsign: null, tripId: null,
+            realTime: false, departureDelay: 0, legGeometry: real?.geometry ?? null, steps: real?.steps ?? [] }];
+    } else rest = best.itinerary.legs;
+    const legs = [ride, ...rest];
+    return {
+        duration: Math.round((best.arriveMs - board.etaMs) / 1000), startTime: board.etaMs, endTime: best.arriveMs,
+        walkDistance: legs.filter(l => l.mode === 'WALK').reduce((n, l) => n + l.distance, 0),
+        transfers: legs.filter(l => l.mode !== 'WALK').length - 1, legs
+    };
+}
+
+function destOf(req) {
+    const lat = parseFloat(req.query.toLat), lon = parseFloat(req.query.toLon);
+    return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : null;
+}
+
+app.get('/api/replan-from-trip', async (req, res) => {
+    const tripId = String(req.query.trip_id || '').replace(/^\d+:/, '');
+    const dest = destOf(req);
+    if (!tripId || !dest) return res.status(400).json({ error: 'trip_id, toLat and toLon are required.' });
+    const tt = fullTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    try {
+        const now = new Date();
+        const [updates, vehicles] = await Promise.all([trustedTripUpdates(), getVehiclePositions().catch(() => null)]);
+        const stops = liveTripStops(tt, tripId, updates, now);
+        if (!stops.length) return res.status(404).json({ error: 'Trip not found.' });
+        // Where you are on it: the stop you boarded at (from_seq), else the stop before where the vehicle is heading
+        const fromSeq = parseInt(req.query.from_seq);
+        const heading = vehicles?.index.get(tripId)?.currentStopSequence;
+        const boardIdx = Number.isFinite(fromSeq) ? stops.findIndex(s => s.seq === fromSeq)
+            : Number.isFinite(heading) ? Math.max(0, stops.findIndex(s => s.seq === heading) - 1) : -1;
+        if (boardIdx < 0) return res.status(400).json({ error: 'Where you are on the trip is unknown: give from_seq.' });
+        const board = stops[boardIdx];
+        const ahead = stops.slice(boardIdx + 1);
+        const { best } = await replan.bestCompletion({ ahead, board, dest, prefer: req.query.prefer, planFrom: (s, at) => planFromStop(s, at, dest), walkFrom: (s) => walkFromStop(s, dest) });
+        if (!best) return res.status(404).json({ error: 'No way found from this trip.' });
+        res.json({ alight: { stopId: best.alight.stopId, name: best.alight.name, seq: best.alight.seq, code: best.alight.code },
+            kind: best.kind, arriveMs: best.arriveMs, itinerary: completionItinerary(tt, tripId, board, best, dest) });
+    } catch (error) {
+        console.error('replan-from-trip failed:', error.message);
+        res.status(500).json({ error: 'Failed to re-plan.' });
+    }
+});
+
+app.get('/api/stop-options', async (req, res) => {
+    const dest = destOf(req);
+    const stopKey = String(req.query.stop || '');
+    if (!stopKey || !dest) return res.status(400).json({ error: 'stop, toLat and toLon are required.' });
+    const tt = fullTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    try {
+        const now = new Date();
+        const windowMs = Math.min(90, Math.max(5, parseInt(req.query.window) || 40)) * 60_000;
+        // The stop by id or code ("1951" or "001951"); a station's platforms count as the stop
+        const base = tt.stopById.get(stopKey) ? [tt.stopById.get(stopKey)] : (tt.stopsByCode.get(stopKey) || []);
+        const ids = new Set(base.map(s => s.stop_id));
+        if (!ids.size) return res.status(404).json({ error: 'Stop not found.' });
+        const updates = await trustedTripUpdates();
+        // Trips leaving soon: the next two of each route and direction, at most 8
+        const rows = activeServiceDays(now).flatMap(d => tt.upcoming([...ids], d).map(r => ({ ...r, day: d })));
+        const perRoute = new Map();
+        const leaving = rows.map(r => {
+            const live = liveStopTime(updates.index.get(r.trip_id)?.stopTimeUpdate, r.stop_sequence, scheduledUtc(r.day, r.departure_time));
+            return { r, departMs: live.estimatedUtc.getTime(), live: live.isRealtime };
+        }).filter(x => x.departMs > now.getTime() - 30_000 && x.departMs < now.getTime() + windowMs)
+          .sort((a, b) => a.departMs - b.departMs)
+          .filter(x => {
+              const k = `${x.r.route_id}|${x.r.direction_id}`;
+              const n = perRoute.get(k) || 0;
+              perRoute.set(k, n + 1);
+              return n < 2;
+          }).slice(0, 8);
+
+        const options = (await Promise.all(leaving.map(async ({ r, departMs, live }) => {
+            const stops = liveTripStops(tt, r.trip_id, updates, now);
+            const i = stops.findIndex(s => s.seq === r.stop_sequence);
+            if (i < 0 || i === stops.length - 1) return null;      // ends here
+            const board = { ...stops[i], etaMs: departMs };
+            const { best } = await replan.bestCompletion({ ahead: stops.slice(i + 1), board, dest, prefer: req.query.prefer,
+                planFrom: (s, at) => planFromStop(s, at, dest), walkFrom: (s) => walkFromStop(s, dest) });
+            if (!best) return null;
+            return {
+                tripId: r.trip_id, routeId: r.route_id, directionId: r.direction_id,
+                routeShortName: r.route_short_name, headsign: r.trip_headsign, routeColor: r.route_color,
+                routeTextColor: r.route_text_color, routeType: r.route_type, platformCode: r.platform_code ?? null,
+                departMs, live, arriveMs: best.arriveMs, kind: best.kind, walkM: best.walkM, transfers: best.transfers,
+                alight: { stopId: best.alight.stopId, name: best.alight.name, seq: best.alight.seq },
+                itinerary: completionItinerary(tt, r.trip_id, board, best, dest)
+            };
+        }))).filter(Boolean);
+        const bestArrive = Math.min(...options.map(o => o.arriveMs));
+        // A bus that lands you half an hour after the best isn't an option worth showing
+        res.json({ bestArriveMs: Number.isFinite(bestArrive) ? bestArrive : null,
+            options: options.filter(o => o.arriveMs <= bestArrive + 30 * 60_000).sort((a, b) => a.departMs - b.departMs) });
+    } catch (error) {
+        console.error('stop-options failed:', error.message);
+        res.status(500).json({ error: 'Failed to work out the options.' });
+    }
+});
+
+
 // The website: on Vercel this was a separate static build, here the API serves it too
 app.use(express.static(path.join(__dirname, 'public')));
 
