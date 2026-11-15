@@ -38,6 +38,19 @@ app.use('/api', (req, res, next) => {
     next();
 });
 
+// Rate limiting (lib/rate-limit.js): per caller, per minute, a generous cap on everything and a
+// tighter one on what reaches the planner or the address search. Over it: 429 with Retry-After.
+const { createLimiter, clientIp, clientIpSource } = require('./lib/rate-limit');
+const limiter = createLimiter();
+app.use('/api', (req, res, next) => {
+    const r = limiter.check(clientIp(req.headers, req.socket.remoteAddress), req.baseUrl + req.path, Date.now());
+    res.setHeader('RateLimit-Limit', r.limit);
+    res.setHeader('RateLimit-Remaining', r.remaining);
+    if (r.ok) return next();
+    res.setHeader('Retry-After', r.retryAfterS);
+    res.status(429).json({ error: 'Too many requests. Try again in a moment.', retryAfterS: r.retryAfterS });
+});
+
 const pool = new Pool({
     connectionString: process.env.POSTGRES_URL,
     max: 10,
@@ -2154,7 +2167,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        deploy, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, slowRequests });
+        deploy, rateLimit: { ipFrom: clientIpSource(req.headers), limited: limiter.stats.limited, callers: limiter.size() }, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, slowRequests });
 });
 
 const PLAN_TIMEOUT_MS = 15_000;
