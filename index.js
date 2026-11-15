@@ -2435,6 +2435,8 @@ app.get('/api/stop-options', async (req, res) => {
             return { r, departMs: live.estimatedUtc.getTime(), live: live.isRealtime };
         }).filter(x => x.departMs > now.getTime() - 30_000 && x.departMs < now.getTime() + windowMs)
           .sort((a, b) => a.departMs - b.departMs)
+          // A stop code can cover several berths or platforms: each trip once, at its earliest
+          .filter((x, i, all) => all.findIndex(y => y.r.trip_id === x.r.trip_id) === i)
           .filter(x => {
               const k = `${x.r.route_id}|${x.r.direction_id}`;
               const n = perRoute.get(k) || 0;
