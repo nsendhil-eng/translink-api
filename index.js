@@ -2361,7 +2361,7 @@ function liveTripStops(tt, tripId, updates, now) {
         const stop = tt.stopById.get(s.stop_id);
         return { stopId: s.stop_id, name: s.stop_name, seq: s.stop_sequence, lat: parseFloat(s.lat), lon: parseFloat(s.lon),
             etaMs: eta, scheduledMs: scheduled.getTime(), live, code: stop?.stop_code ?? null,
-            hub: Boolean(stop?.parent_station) || /station|busway|interchange/i.test(s.stop_name) };
+            hub: Boolean(stop?.parent_station) || /station|busway|interchange|transit cent(re|er)/i.test(s.stop_name) };
     });
 }
 

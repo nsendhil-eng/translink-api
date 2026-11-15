@@ -63,6 +63,18 @@ test('a planner failure just leaves the walk', async () => {
     assert.equal(best.kind, 'walk');
 });
 
+test('a hub a little further from the destination than the start is still a change', () => {
+    // Gold Coast trains leave Roma Street, 100 m further from the Gold Coast than Wesley Hospital
+    const gcuh = { lat: -27.959679, lon: 153.3817841 };
+    const wesley = { stopId: 's9', name: 'Coronation Dr at Wesley Hospital, stop 9', lat: -27.480073, lon: 152.998002, etaMs: min(0) };
+    const transitCentre = { stopId: '125', name: 'Roma Street Stop 125 at Transit Centre', lat: -27.4656, lon: 153.0185, etaMs: min(8), hub: true };
+    const ann = { stopId: '138', name: 'Roma Street Stop 138 near Ann St', lat: -27.4645, lon: 153.0215, etaMs: min(10) };
+    assert.deepEqual(changeCandidates([transitCentre, ann], wesley, gcuh, 3).map(s => s.stopId), ['125']);
+    // But not one far off the other way
+    const ipswich = { ...transitCentre, stopId: 'ips', lat: -27.6144, lon: 152.7600 };
+    assert.deepEqual(changeCandidates([ipswich, ann], wesley, gcuh, 3).map(s => s.stopId), ['138']);
+});
+
 test('change candidates are hubs closer to the destination, nearest first', () => {
     const c = changeCandidates([roma, kgs, far], board, WORK, 3);
     assert.deepEqual(c.map(s => s.stopId), ['kgs', 'roma']);
