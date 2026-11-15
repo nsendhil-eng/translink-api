@@ -64,6 +64,8 @@ const fetchOptions = { headers: { 'User-Agent': 'Mozilla/5.0' } };
 //    refresh, not re-scanned by every endpoint
 //  - if a refresh fails, serve the last good copy for up to STALE_MAX_MS
 const STALE_MAX_MS = 120_000;
+// A Translink download that hangs instead of failing would otherwise hold every live endpoint
+const FEED_TIMEOUT_MS = 8_000;
 const KEEP_WARM_MS = 10 * 60_000;
 // While warm, a copy this much older than its TTL is still served without waiting (a refresh
 // is on its way)
@@ -81,7 +83,7 @@ function createFeedCache(name, url, ttlMs, buildIndex) {
         const headers = { ...fetchOptions.headers };
         if (current && validators.lastModified) headers['If-Modified-Since'] = validators.lastModified;
         if (current && validators.etag) headers['If-None-Match'] = validators.etag;
-        const r = await fetch(url, { ...fetchOptions, headers });
+        const r = await fetch(url, { ...fetchOptions, headers, signal: AbortSignal.timeout(FEED_TIMEOUT_MS) });
         if (r.status === 304 && current) {
             stats.unchanged++;
             current.fetchedAt = Date.now();
@@ -183,6 +185,7 @@ const placesFile = require('./lib/places-file');
 const fileTimetable = () => (process.env.TIMETABLE_SOURCE === 'postgres' ? null : timetableFile.current());
 // The file, once it has what the rest of the endpoints need (shapes, stops per route)
 const fullTimetable = () => { const t = fileTimetable(); return t?.complete ? t : null; };
+const { radiusOf, planQuery } = require('./lib/validate');
 const { SEQ_BBOX, HOUSE_NUMBER_PREFIX, fromPhoton, fromNominatim, fromOverture, tidy, mergePlaces } = require('./lib/places');
 
 // --- Timetable by service day ----------------------------------------------------
@@ -552,7 +555,7 @@ app.get('/api/stops-for-route', async (req, res) => {
 app.get('/api/vehicles-near-me', async (req, res) => {
     const lat = parseFloat(req.query.lat);
     const lon = parseFloat(req.query.lon);
-    const radius = parseFloat(req.query.radius) || 1000;
+    const radius = radiusOf(req.query.radius, 1000);
     if (isNaN(lat) || isNaN(lon)) return res.status(400).json({ error: 'lat and lon are required.' });
 
     try {
@@ -1018,7 +1021,7 @@ app.get('/api/stops-near-me', async (req, res) => {
   const { lat, lon, radius, types } = req.query;
   if (!lat || !lon) { return res.status(400).json({ error: 'Latitude and longitude are required.' }); }
   try {
-    const radiusInMeters = parseInt(radius, 10) || 500;
+    const radiusInMeters = Math.round(radiusOf(radius, 500));
     const typeFilter = types ? types.split(',').map(Number) : null;
     const tt = fileTimetable();
     if (tt) {
@@ -1278,7 +1281,7 @@ app.get('/api/departures', async (req, res) => {
         res.json(result);
     } catch (error) {
         console.error('An error occurred in /api/departures:', error);
-        res.status(500).json({ message: 'The server failed to process the request.', error_details: error.message });
+        res.status(500).json({ message: 'The server failed to process the request.' });
     }
 });
 
@@ -2154,29 +2157,27 @@ app.get('/api/health', async (req, res) => {
         deploy, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, slowRequests });
 });
 
+const PLAN_TIMEOUT_MS = 15_000;
 app.get('/api/plan', async (req, res) => {
-    const { fromLat, fromLon, toLat, toLon, time, date, modes, arriveBy } = req.query;
-    if (!fromLat || !fromLon || !toLat || !toLon) {
-        return res.status(400).json({ error: 'fromLat, fromLon, toLat, toLon are required.' });
-    }
-    const planDate = date || new Date().toISOString().slice(0, 10);
-    const planTime = time || '8:00am';
-    const planModes = modes || 'TRANSIT,WALK';
+    // Checked before anything reaches the planner's URL; no date or time means now in Brisbane
+    const checked = planQuery(req.query, () => brisbaneDateTime(Date.now()));
+    if (!checked.ok) return res.status(400).json({ error: checked.error });
+    const { fromLat, fromLon, toLat, toLon, date, time, modes, arriveBy } = checked.plan;
 
     try {
         const otpUrl = `${OTP_URL}/otp/routers/default/plan` +
             `?fromPlace=${fromLat},${fromLon}` +
             `&toPlace=${toLat},${toLon}` +
-            `&time=${encodeURIComponent(planTime)}` +
-            `&date=${planDate}` +
-            `&mode=${planModes}` +
+            `&time=${encodeURIComponent(time)}` +
+            `&date=${date}` +
+            `&mode=${modes}` +
             `&numItineraries=5` +
             `&walkReluctance=5` +
             `&maxWalkDistance=1500` +
             // Optional: plan to arrive by `time` instead of leaving at it
-            (arriveBy === 'true' ? '&arriveBy=true' : '');
+            (arriveBy ? '&arriveBy=true' : '');
 
-        const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' } });
+        const otpRes = await fetch(otpUrl, { headers: { 'User-Agent': 'WayGo/1.0' }, signal: AbortSignal.timeout(PLAN_TIMEOUT_MS) });
         if (!otpRes.ok) return res.status(502).json({ error: 'OTP request failed.' });
 
         const data = await otpRes.json();
@@ -2223,8 +2224,9 @@ app.get('/api/plan', async (req, res) => {
 
         res.json({ itineraries: sorted });
     } catch (error) {
-        console.error('plan failed:', error);
-        res.status(500).json({ error: 'Failed to fetch journey plan.' });
+        console.error('plan failed:', error.message);
+        // A planner too slow to answer is a gateway timeout, not our own failure
+        res.status(error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 500).json({ error: 'Failed to fetch journey plan.' });
     }
 });
 
