@@ -87,3 +87,19 @@ test('the real walk replaces the estimate for the best stops', async () => {
     assert.equal(k.walk.geometry, 'abc');
     assert.ok(best);
 });
+
+const { legOnTrip } = require('../lib/replan');
+
+test('a planned ride finds its live times on the trip, boarding before getting off', () => {
+    const stops = [
+        { stopId: 'a', code: '001', etaMs: min(0), live: false },
+        { stopId: 'b', code: '600030', etaMs: min(8), scheduledMs: min(2), live: true },
+        { stopId: 'c', code: '600119', etaMs: min(76), live: true },
+        { stopId: 'd', code: '600030', etaMs: min(90), live: true }   // a loop back through the same station
+    ];
+    assert.deepEqual(legOnTrip(stops, '600030', '600119'), { departMs: min(8), arriveMs: min(76), scheduledDepartMs: min(2), live: true });
+    assert.deepEqual(legOnTrip(stops, 'a', 'b'), { departMs: min(0), arriveMs: min(8), scheduledDepartMs: null, live: true });
+    assert.equal(legOnTrip(stops, '600119', '001'), null, 'getting off before boarding is no ride');
+    assert.equal(legOnTrip(stops, 'zzz', '600119'), null);
+    assert.equal(legOnTrip(stops, null, '600119'), null);
+});

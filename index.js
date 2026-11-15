@@ -1807,6 +1807,28 @@ app.get('/api/plan-delays', async (req, res) => {
     }
 });
 
+// ── GET /api/plan-live?legs=tripId~fromCode~toCode,... ──────────────────────────────────────
+// A plan's rides as they're running now: each ride's live departure from where you board and
+// arrival where you get off (every mode, not just the delay), so the journey screen can retime
+// the trip and spot a change it can no longer make. Legs in order; null for one it can't place.
+app.get('/api/plan-live', async (req, res) => {
+    const tt = fullTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    const legs = String(req.query.legs || '').split(',').map(s => s.split('~')).filter(p => p.length === 3 && p[0]).slice(0, 8);
+    try {
+        const now = new Date();
+        const updates = await trustedTripUpdates();
+        res.json({ legs: legs.map(([tripId, from, to]) => {
+            const id = tripId.trim().replace(/^\d+:/, '');
+            const placed = replan.legOnTrip(liveTripStops(tt, id, updates, now), from.trim(), to.trim());
+            return placed && { tripId: id, ...placed, cancelled: isTripCancelled(updates.index.get(id)) };
+        }) });
+    } catch (e) {
+        console.error('plan-live failed:', e.message);
+        res.status(500).json({ error: 'Failed to read live times.' });
+    }
+});
+
 // --- ALERTS ENDPOINT ---
 // GET /api/alerts?route_ids=412-5146,SPRP-4740&stop_ids=1951,600284
 // Active Translink service alerts (plus those starting within 24 h, as "upcoming") that
@@ -2338,7 +2360,7 @@ function liveTripStops(tt, tripId, updates, now) {
         else if (carried != null) { eta = scheduled.getTime() + carried * 1000; live = true; }
         const stop = tt.stopById.get(s.stop_id);
         return { stopId: s.stop_id, name: s.stop_name, seq: s.stop_sequence, lat: parseFloat(s.lat), lon: parseFloat(s.lon),
-            etaMs: eta, live, code: stop?.stop_code ?? null,
+            etaMs: eta, scheduledMs: scheduled.getTime(), live, code: stop?.stop_code ?? null,
             hub: Boolean(stop?.parent_station) || /station|busway|interchange/i.test(s.stop_name) };
     });
 }
@@ -2422,6 +2444,8 @@ app.get('/api/stop-options', async (req, res) => {
     try {
         const now = new Date();
         const windowMs = Math.min(90, Math.max(5, parseInt(req.query.window) || 40)) * 60_000;
+        // A later ride's stop: the window opens when you get there (`after`, ms), not now
+        const after = Math.min(Math.max(parseInt(req.query.after) || 0, now.getTime()), now.getTime() + 6 * 3600_000);
         // The stop by id or code ("1951" or "001951"); a station's platforms count as the stop
         const base = tt.stopById.get(stopKey) ? [tt.stopById.get(stopKey)] : (tt.stopsByCode.get(stopKey) || []);
         const ids = new Set(base.map(s => s.stop_id));
@@ -2433,7 +2457,7 @@ app.get('/api/stop-options', async (req, res) => {
         const leaving = rows.map(r => {
             const live = liveStopTime(updates.index.get(r.trip_id)?.stopTimeUpdate, r.stop_sequence, scheduledUtc(r.day, r.departure_time));
             return { r, departMs: live.estimatedUtc.getTime(), live: live.isRealtime };
-        }).filter(x => x.departMs > now.getTime() - 30_000 && x.departMs < now.getTime() + windowMs)
+        }).filter(x => x.departMs > after - 30_000 && x.departMs < after + windowMs)
           .sort((a, b) => a.departMs - b.departMs)
           // A stop code can cover several berths or platforms: each trip once, at its earliest
           .filter((x, i, all) => all.findIndex(y => y.r.trip_id === x.r.trip_id) === i)
