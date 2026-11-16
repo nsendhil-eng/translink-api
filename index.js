@@ -589,6 +589,8 @@ app.get('/api/vehicles-near-me', async (req, res) => {
                 lon: vLon,
                 bearing: v.position.bearing ?? 0,
                 tripId: v.trip?.tripId ?? null,
+                timestamp: Number(v.timestamp) || null,
+                stopSeq: v.currentStopSequence ?? null,
             });
         }
 
@@ -620,6 +622,11 @@ app.get('/api/vehicles-near-me', async (req, res) => {
                 routeShortName: route.route_short_name ?? '',
                 routeColor: route.route_color ?? null,
                 routeType: route.route_type ?? 3,
+                // Additive: which trip, and when the position was reported (epoch s), so a client
+                // can line the report up with where it was itself at that moment
+                tripId: v.tripId,
+                timestamp: v.timestamp,
+                stopSeq: v.stopSeq,
             };
         });
 
