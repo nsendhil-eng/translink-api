@@ -92,3 +92,22 @@ test('the grid lookup finds what a full scan finds', () => {
     const all = rankVehicles(riding, entriesOf(vehicles), { shapeOf: () => ROUTE }).candidates.map(c => c.tripId);
     assert.deepStrictEqual(fromCell, all);
 });
+
+const { prepareShape } = require('../lib/which-vehicle');
+
+test('a prepared shape ranks exactly as the raw one', () => {
+    const vehicles = { t460: vehicle(-300, 35), t411: vehicle(-1200, 10), t444: vehicle(150, 20) };
+    const raw = rank(riding, vehicles);
+    const prepared = rankVehicles(riding, entriesOf(vehicles), { shapeOf: () => prepareShape(ROUTE) });
+    assert.deepStrictEqual(prepared, raw);
+});
+
+test("a bus well off its own route isn't snapped onto the route beside you", () => {
+    // Reported 600 m north of the road (a detour, a depot run, or the wrong trip) and stopped, so it
+    // can be at most ~150 m on. Its route's nearest point is right where you are: snapped there, it
+    // used to look like the bus you were on.
+    const [la, lo] = east(0);
+    const offRoute = { position: { latitude: la + 600 / 110_540, longitude: lo }, timestamp: NOW - 5, currentStatus: 1, currentStopSequence: 30 };
+    const r = rank(riding, { stray: offRoute });
+    assert.ok(!r.candidates.some(c => c.tripId === 'stray'), JSON.stringify(r.candidates));
+});

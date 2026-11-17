@@ -26,7 +26,8 @@ app.use('/api', (req, res, next) => {
     // How long the server spent, for anyone timing requests (curl -I, browser dev tools)
     const writeHead = res.writeHead;
     res.writeHead = function (...args) {
-        if (!res.headersSent) res.setHeader('Server-Timing', `app;dur=${Date.now() - t0}`);
+        // Added to any timing the endpoint gave itself ("which;dur=…"), not in place of it
+        if (!res.headersSent) res.setHeader('Server-Timing', [res.getHeader('Server-Timing'), `app;dur=${Date.now() - t0}`].filter(Boolean).join(', '));
         return writeHead.apply(this, args);
     };
     res.on('finish', () => {
@@ -646,12 +647,13 @@ const whichVehicle = require('./lib/which-vehicle');
 let vehicleGrid = null;            // { index, builtAt, grid }
 const VEHICLE_GRID_MS = 8_000;
 const shapeCache = new Map();      // shape_id -> points, least recently used first
-const SHAPE_CACHE_MAX = 300;
+const SHAPE_CACHE_MAX = 1500;   // prepared shapes, ~9 KB each: ~14 MB at most
 function cachedShape(tt, shapeId) {
     if (!shapeId) return [];
     let pts = shapeCache.get(shapeId);
     if (pts) { shapeCache.delete(shapeId); shapeCache.set(shapeId, pts); return pts; }
-    pts = tt.shape(shapeId);
+    // Prepared once (degrees, distance along, per-segment reads): a request only reads the part near the rider
+    pts = whichVehicle.prepareShape(tt.shape(shapeId));
     shapeCache.set(shapeId, pts);
     if (shapeCache.size > SHAPE_CACHE_MAX) shapeCache.delete(shapeCache.keys().next().value);
     return pts;
