@@ -165,3 +165,53 @@ test('a departure still to come is shown at most a minute early', () => {
     const past = liveStopTime([{ stopSequence: 14, departure: { delay: -600 } }], 14, new Date(Date.now() - 60_000));
     assert.strictEqual(past.delaySeconds, -600);
 });
+
+const { alignTripUpdate } = require('../lib/realtime');
+
+// The 7:21 Springfield Central train, running express Indooroopilly to Roma Street (19 Nov 2026)
+const LINE = [
+    ['600290', 'Corinda'], ['600302', 'Chelmer'], ['600298', 'Indooroopilly'], ['600296', 'Taringa'], ['600292', 'Toowong'],
+    ['600284', 'Auchenflower'], ['600280', 'Milton'], ['600038', 'Roma Street'], ['600024', 'Central'], ['600011', 'Fortitude Valley']
+].map(([stop_id], i) => ({ stop_sequence: 8 + i, stop_id }));
+const upd = (seq, stopId, delay) => ({ stopSequence: seq, stopId, departure: { delay } });
+
+test('an express trip renumbered by the feed lines up by stop, and the stops it runs past are skipped', () => {
+    // The feed: Chelmer 9, Indooroopilly 10, then Roma Street 11, Central 12, Fortitude Valley 13
+    const tu = { trip: { tripId: 'x' }, stopTimeUpdate: [upd(9, '600302', 297), upd(10, '600298', 310), upd(11, '600038', 153), upd(12, '600024', 176), upd(13, '600011', 86)] };
+    const a = alignTripUpdate(tu, LINE);
+    const at = (seq) => a.stopTimeUpdate.find(u => u.stopSequence === seq);
+    assert.strictEqual(at(10).stopId, '600298');                       // Indooroopilly stays 10
+    assert.strictEqual(at(15).stopId, '600038');                       // Roma Street is the timetable's 15
+    assert.strictEqual(at(17).departure.delay, 86);                    // Fortitude Valley's own time
+    for (const seq of [11, 12, 13, 14]) assert.strictEqual(at(seq).scheduleRelationship, 1, `stop ${seq} skipped`);
+    assert.strictEqual(at(13).stopId, '600284');                       // Auchenflower: not stopping
+});
+
+test('a trip whose numbers agree comes back untouched', () => {
+    const tu = { stopTimeUpdate: [upd(10, '600298', 30), upd(13, '600284', 40)] };
+    assert.strictEqual(alignTripUpdate(tu, LINE), tu);
+});
+
+test('a gap in the updates is not a skip', () => {
+    // Renumbered (off by one), but the feed's own numbers jump too: stops just not updated
+    const tu = { stopTimeUpdate: [upd(9, '600298', 30), upd(12, '600284', 40)] };
+    const a = alignTripUpdate(tu, LINE);
+    assert.deepStrictEqual(a.stopTimeUpdate.map(u => [u.stopSequence, u.scheduleRelationship ?? 0]), [[10, 0], [13, 0]]);
+});
+
+test('another platform of the same station still lines up', () => {
+    const tu = { stopTimeUpdate: [upd(1, '600039', 60)] };   // Roma Street platform 10, feed numbered 1
+    const a = alignTripUpdate(tu, LINE, (x, y) => x === y || (x.startsWith('60003') && y.startsWith('60003')));
+    assert.strictEqual(a.stopTimeUpdate[0].stopSequence, 15);
+});
+
+const { alignVehicle } = require('../lib/realtime');
+
+test("the vehicle on a renumbered trip gets the timetable's stop number too", () => {
+    const tu = { stopTimeUpdate: [upd(9, '600302', 297), upd(10, '600298', 310), upd(11, '600038', 153), upd(12, '600024', 176)] };
+    const a = alignTripUpdate(tu, LINE);
+    // The train heading to Roma Street: the feed says stop 11, the timetable's Roma Street is 15
+    assert.strictEqual(alignVehicle({ currentStopSequence: 11, position: {} }, a).currentStopSequence, 15);
+    const v = { currentStopSequence: 11 };
+    assert.strictEqual(alignVehicle(v, tu), v, 'not renumbered: as it was');
+});

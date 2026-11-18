@@ -140,11 +140,41 @@ function createFeedCache(name, url, ttlMs, buildIndex) {
 }
 
 // trip_id -> TripUpdate
+// Each trip's update is lined up with the timetable's stops when it's first looked up (once per
+// feed refresh): Translink renumbers an altered trip's stops (lib/realtime.js alignTripUpdate)
+class AlignedTripUpdates extends Map {
+    get(tripId) {
+        const tu = super.get(tripId);
+        if (!tu || this.done?.has(tripId)) return tu;
+        (this.done ??= new Set()).add(tripId);
+        const tt = fileTimetable();
+        if (!tt) return tu;
+        const stops = tt.tripStopTimes(tripId);
+        const station = (id) => tt.stopById.get(id)?.parent_station || id;
+        const aligned = alignTripUpdate(tu, stops, (a, b) => a === b || station(a) === station(b));
+        if (aligned !== tu) super.set(tripId, aligned);
+        return aligned;
+    }
+}
+let latestTripIndex = null;   // the newest AlignedTripUpdates, for lining vehicles up with their trips
 const getTripUpdates = createFeedCache('TripUpdates', REALTIME_URL, 10_000, (feed) => {
-    const byTrip = new Map();
+    const byTrip = new AlignedTripUpdates();
     for (const e of feed.entity) if (e.tripUpdate?.trip?.tripId) byTrip.set(e.tripUpdate.trip.tripId, e.tripUpdate);
+    latestTripIndex = byTrip;
     return byTrip;
 });
+
+/** Vehicles by trip, each with its stop number in the timetable's numbering when its trip was renumbered */
+class AlignedVehicles extends Map {
+    get(tripId) {
+        const v = super.get(tripId);
+        if (!v || this.done?.has(tripId)) return v;
+        (this.done ??= new Set()).add(tripId);
+        const aligned = alignVehicle(v, latestTripIndex?.get(tripId));
+        if (aligned !== v) super.set(tripId, aligned);
+        return aligned;
+    }
+}
 
 // The live feed as the app's own screens should see it: a trip whose prediction can't be right
 // (lib/otp-feed.js: the vehicle couldn't reach the stop in time) reads as having no live data,
@@ -159,7 +189,11 @@ async function trustedTripUpdates() {
         const vehicles = await getVehiclePositions().catch(() => null);
         doubtCache = {
             at: Date.now(), source: updates.feed,
-            doubted: doubtedTrips(updates.feed.entity, {
+            doubted: doubtedTrips(updates.feed.entity.map(e => {
+                const id = e.tripUpdate?.trip?.tripId;
+                const tu = id ? updates.index.get(id) : null;
+                return tu && tu !== e.tripUpdate ? Object.assign(Object.create(Object.getPrototypeOf(e)), e, { tripUpdate: tu }) : e;
+            }), {
                 stopsOfTrip: (id) => tt.tripStopTimes(id),
                 vehicleOfTrip: (id) => vehicles?.index.get(id),
                 nowS: Date.now() / 1000
@@ -174,11 +208,11 @@ async function trustedTripUpdates() {
 // trip_id -> VehiclePosition; with duplicate vehicles on a trip, see preferVehicle
 const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITIONS_URL, 4_000, (feed) => {
     const nowS = Date.now() / 1000;
-    const byTrip = new Map();
+    const byTrip = new AlignedVehicles();
     for (const e of feed.entity) {
         const v = e.vehicle;
         const id = v?.trip?.tripId;
-        if (id && preferVehicle(v, byTrip.get(id), nowS)) byTrip.set(id, v);
+        if (id && preferVehicle(v, Map.prototype.get.call(byTrip, id), nowS)) byTrip.set(id, v);
     }
     return byTrip;
 });
@@ -186,7 +220,7 @@ const getVehiclePositions = createFeedCache('VehiclePositions', VEHICLE_POSITION
 const { haversineMeters, departureHeading, headingAlongShape, pathAhead, geojsonToLatLon } = require('./lib/geo');
 const {
     STOP_SKIPPED, VEHICLE_STALE_S, serviceDay, activeServiceDays, scheduledUtc, formatBrisbane, stopEvent, liveStopTime,
-    toNum, isTripCancelled, isStopSkipped, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
+    toNum, isTripCancelled, isStopSkipped, alignTripUpdate, alignVehicle, fixAgeSeconds, isFreshFix, preferVehicle, vehiclePassedStop, passedPerFeed
 } = require('./lib/realtime');
 const { routeCode, parseAlertEntity, alertWindow, alertJson } = require('./lib/alerts');
 const { affectedStationNames, closureEnds, matchStations } = require('./lib/alertPages');
@@ -1825,7 +1859,13 @@ app.get('/api/otp-trip-updates', async (req, res) => {
         const updates = await getTripUpdates({ keepWarm: false });
         if (!otpFeedCache || otpFeedCache.source !== updates.feed || Date.now() - otpFeedCache.at > OTP_FEED_CACHE_MS) {
             const vehicles = await getVehiclePositions({ keepWarm: false }).catch(() => null);
-            const { entity, stats } = cleanTripUpdates(updates.feed.entity, {
+            // Lined up with the timetable first: an altered trip's renumbered stops would mislead OTP too
+            const lined = updates.feed.entity.map(e => {
+                const id = e.tripUpdate?.trip?.tripId;
+                const tu = id ? updates.index.get(id) : null;
+                return tu && tu !== e.tripUpdate ? Object.assign(Object.create(Object.getPrototypeOf(e)), e, { tripUpdate: tu }) : e;
+            });
+            const { entity, stats } = cleanTripUpdates(lined, {
                 stopsOfTrip: (id) => tt.tripStopTimes(id),
                 vehicleOfTrip: (id) => vehicles?.index.get(id),
                 nowS: Date.now() / 1000
