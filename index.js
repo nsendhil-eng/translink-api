@@ -717,6 +717,54 @@ app.get('/api/which-vehicle', async (req, res) => {
     }
 });
 
+// --- RIDE CANDIDATES: which vehicle, by route shape and time (see lib/ride-match.js) -------------
+// GET /api/ride-candidates?fixes=lat,lon,epochS;...[&trips=id,id]
+// The phone's last minute or two of fixes in. First call: every live vehicle whose route follows
+// the trail in its direction, scored by how close it was to the rider at its own report time (the
+// set, typically 5–15 in the city). Later calls name the set (`trips`) and it narrows. The fixes are
+// never logged. Additive: /api/which-vehicle stays for trip mode and older apps.
+const rideMatch = require('./lib/ride-match');
+const rideStats = { requests: 0, named: 0, slowest: 0 };
+app.get('/api/ride-candidates', async (req, res) => {
+    const t0 = process.hrtime.bigint();
+    const fixes = rideMatch.parseTrail(req.query.fixes);
+    if (fixes.length < 2) return res.status(400).json({ error: 'fixes: at least two of lat,lon,epochSeconds separated by ;' });
+    const tt = fullTimetable();
+    if (!tt) return res.status(503).json({ error: 'Timetable not loaded yet.' });
+    const trips = req.query.trips ? new Set(String(req.query.trips).split(',').map(s => s.trim().replace(/^\d+:/, '')).filter(Boolean).slice(0, 30)) : null;
+    try {
+        const vehicles = await getVehiclePositions();
+        const ranked = rideMatch.rideCandidates(fixes, vehicles.index, {
+            shapeOf: (id) => cachedShape(tt, tt.trip(id)?.shape_id), trips, nowS: Date.now() / 1000
+        });
+        const total = ranked.candidates.reduce((sum, c) => sum + c.fit, 0);
+        const timesOf = (id) => tt.tripStopTimes(id);
+        const candidates = ranked.candidates.map(c => {
+            const trip = tt.trip(c.tripId);
+            const next = c.v.currentStopSequence != null ? timesOf(c.tripId).find(s => s.stop_sequence === c.v.currentStopSequence) : null;
+            return {
+                tripId: c.tripId,
+                routeShortName: trip?.route?.route_short_name ?? '',
+                headsign: trip?.trip_headsign ?? '',
+                routeColor: trip?.route?.route_color ?? null,
+                routeType: trip?.route?.route_type ?? 3,
+                directionId: trip?.direction_id ?? null,
+                fit: c.fit, share: total ? Math.round(c.fit / total * 100) / 100 : 0,
+                gapM: c.gapM, distanceM: Math.abs(c.gapM), follows: c.follows, ageS: c.ageS,
+                nextStop: next ? { name: next.stop_name, seq: next.stop_sequence } : null
+            };
+        });
+        const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+        rideStats.requests++; if (trips) rideStats.named++;
+        rideStats.slowest = Math.max(rideStats.slowest, Math.round(ms));
+        res.set('Server-Timing', `ride;dur=${ms.toFixed(1)}`);
+        res.json({ moving: ranked.moving, speedMps: ranked.speedMps, candidates });
+    } catch (error) {
+        console.error('ride-candidates failed:', error.message);
+        res.status(500).json({ error: 'Failed to match vehicles.' });
+    }
+});
+
 // --- STOPS FILE: every boarding stop, for the app to keep on the phone ---------------------------
 // GET /api/stops-file -> { version, parents: {id: name}, stops: [[id, name, code, lat, lon, parent,
 // routeTypes, servicingRoutes], ...] }. The app answers "stops near me" and the map's dots from it
@@ -2176,7 +2224,7 @@ app.get('/api/health', async (req, res) => {
     const ok = healthCache.checks.every(c => c.ok);
     // The files don't affect `ok`: without them requests fall back to Postgres
     res.status(ok ? 200 : 503).json({ ok, checkedAt: new Date(healthCache.at).toISOString(), checks: healthCache.checks,
-        deploy, rateLimit: { ipFrom: clientIpSource(req.headers), limited: limiter.stats.limited, callers: limiter.size() }, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, slowRequests });
+        deploy, rateLimit: { ipFrom: clientIpSource(req.headers), limited: limiter.stats.limited, callers: limiter.size() }, doubtedLiveTrips: doubtCache?.doubted.size ?? null, otpFeed: otpFeedCache && { builtAt: new Date(otpFeedCache.at).toISOString(), bytes: otpFeedCache.bytes.length, ...otpFeedCache.stats }, timetableFile: timetableFile.status(), placesFile: placesFile.status(), liveFeeds: feedStats, whichVehicle: whichVehicleStats, rideCandidates: rideStats, slowRequests });
 });
 
 const PLAN_TIMEOUT_MS = 15_000;
